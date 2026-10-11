@@ -1,7 +1,7 @@
 """drop cross-db FK on user_links.music_user_id (#72 결정 1: 독립 DB + 좁은 브리지)
 
 Revision ID: b8e4f1a2c3d7
-Revises: a7f3c91d4e62
+Revises: c3d4e5f7a8b9
 Create Date: 2026-10-11 12:00:00.000000
 
 배경 (ISSUE #72 결정 1, 2026-10-11 사용자 확정):
@@ -32,7 +32,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "b8e4f1a2c3d7"
-down_revision: Union[str, Sequence[str], None] = "a7f3c91d4e62"
+down_revision: Union[str, Sequence[str], None] = "c3d4e5f7a8b9"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

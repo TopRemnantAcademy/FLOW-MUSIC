@@ -232,7 +232,7 @@ def test_song_out_exposes_extend_type(client, provider):
 
 
 def test_model_column_exists_for_extend_type():
-    """模型层：songs.extend_type 列存在（迁移 c3d4e5f6a7b8 的 ORM 侧对应）。"""
+    """模型层：songs.extend_type 列存在（迁移 c3d4e5f7a8b9 的 ORM 侧对应）。"""
     assert "extend_type" in Song.__table__.columns
     assert Song.__table__.columns["extend_type"].nullable is True
 

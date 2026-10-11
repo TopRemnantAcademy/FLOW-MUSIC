@@ -13,6 +13,12 @@ model=mureka-8 时必填），`GenerateRequest.extend_type` 也早已有定义�
 即使传了也会被静默丢弃**。这是比报错更糟的「假功能」形态（GAP-008/149 明令禁止）。
 
 本列可空：NULL = 未指定（由 provider 按默认 tail 处理，保持既有行为不变）。
+
+[2026-10-11 迁移链收敛] 原 revision id 为 `c3d4e5f6a7b8`，与 GAP-002 的
+`add_user_auth_gap002` **完全撞号**（两条迁移同 id 不同文件，alembic 报
+"Revision ... is present more than once" 且 heads 里出现重复项）。此处改用
+唯一 id `c3d4e5f7a8b9`；同时把 down_revision 从 `a7f3c91d4e62`（旧基线）
+重链到 GAP-002 的 head，使 #97/#100/#96 三条并行迁移收敛为单链。
 """
 
 from typing import Sequence, Union
@@ -21,8 +27,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "c3d4e5f6a7b8"
-down_revision: Union[str, Sequence[str], None] = "a7f3c91d4e62"
+revision: str = "c3d4e5f7a8b9"
+down_revision: Union[str, Sequence[str], None] = "c3d4e5f6a7b8"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
