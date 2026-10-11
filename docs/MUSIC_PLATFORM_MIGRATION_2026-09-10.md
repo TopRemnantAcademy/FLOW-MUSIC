@@ -1,5 +1,20 @@
 # 音乐平台迁入 FLOW + 数据库合一（2026-09-10）
 
+## ⚠️ SUPERSEDED（部分）— 已被 ISSUE #72 决策取代（2026-10-11）
+
+> **本文的「数据库合一 / 与 FLOW 共享 `.gospel.db`」结论已被正式推翻。**
+> 用户于 2026-10-11 在 ISSUE #72 拍板 **决策 1 = A 独立库 + 窄桥**：
+> 音乐平台与 FLOW **各库各主权，不共享 DB**；用户身份经 token 交换
+> （`flow-token` / `flow-exchange`，scope=`sync:flow`）+ `user_links` 映射表关联。
+>
+> - 受影响项：本文「决策 / 迁移结果」表中的 **`数据库 → .gospel.db（与 FLOW 共享）`** 一行。
+> - 连带清理：`UserLink.music_user_id` 的 `ForeignKey("users.id")` 已降级为**普通列**
+>   （提交 `b8e4f1a2c3d7`）——跨库 FK 不成立。
+> - **原文保留**（不删），仅作历史记录与决策轨迹。
+>
+> 取代指针：ISSUE #72；相关收敛见 `docs/MUSIC_TAB_MERGE_PLAN_2026-09-21.md`
+> 与 `docs/PLAN_MUSIC_APP_2026-09-28.md` 头部同类 banner。
+
 ## 决策
 用户拍板：只保留 FLOW 一个项目文件夹，korean-gospel-ai 文件夹将被删除。
 ai-music-platform 整体迁入 FLOW，并与 FLOW 共享数据库（co-location D5 落地）。

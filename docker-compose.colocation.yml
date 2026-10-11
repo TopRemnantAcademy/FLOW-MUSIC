@@ -23,6 +23,16 @@
 #   漏列时 compose 不会为显式指定的服务自动补齐依赖 → backend 会在
 #   未迁移的库上启动（此时靠 create_all 兜底，等于又回到迁移被架空的旧状态）。
 # =========================================================
+# 🔴 DB 主权边界（ISSUE #72 决策 1，2026-10-11 用户确认）
+#   本覆盖文件**只错开端口**，绝不合并两服务的数据库。共置后二者仍是：
+#     · 音乐平台 → 自己的库（`sqlite:////app/data/app.db`，见 docker-compose.yml:49）
+#     · FLOW      → 自己的库（`./gospel.db` 即 `.gospel.db`，见 FLOW 侧 docker-compose.prod.yml）
+#   用户身份靠 token 交换（flow-token / flow-exchange，scope=`sync:flow`）
+#   + `user_links` 映射表关联，**不做同库 JOIN**。
+#   ⚠ 任何“把两库指向同一文件 / 同库不同表”的改动都违反 #72 决策 1，
+#     且会让 `user_links.music_user_id` 的 cross-DB 语义再次失效。
+#   背景见 docs/MUSIC_PLATFORM_MIGRATION_2026-09-10.md 头部 supersede 指针。
+# =========================================================
 services:
   backend:
     ports:

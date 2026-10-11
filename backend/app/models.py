@@ -180,13 +180,21 @@ class UserLink(Base):
     - 구독 상태는 음악 도메인 only; FLOW 는 자기 토큰으로 음악 구독을 추론/요구하지 않음.
     - 이 테이블만 공유 경계(브리지)에 속하며 PII 원문은 보관하지 않음(가명키 매핑만).
     - co-location 결정(기획서 §2.3 / §3.2): 별도 identity + user_link 브로커.
+
+    [2026-10-11 #72 결정 1 — A안: 독립 DB + 좁은 브리지]
+    `music_user_id` 는 **일반 컬럼**(외래키 아님)이다. 두 서비스가 각자 자기 DB 의
+    주권을 갖는 이상, FLOW 쪽 DB 에서 이 값을 `users.id` 로 FK 참조할 수 없다
+    (cross-database FK 는 성립하지 않음). 정합성은 FK 대신 좁은 브리지의
+    upsert 경로(`auth.py` flow-link)와 토큰 교환(`flow-exchange`)이 책임진다.
+    ※ 종전 `ForeignKey("users.id")` 는 공유 DB 전제(MUSIC_PLATFORM_MIGRATION_2026-09-10)
+      잔재 — 해당 문서는 본 결정으로 supersede 됨.
     """
 
     __tablename__ = "user_links"
 
     id = Column(Integer, primary_key=True, index=True)
     flow_subscriber_id = Column(String(255), unique=True, index=True, nullable=False)
-    music_user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    music_user_id = Column(Integer, index=True)  # cross-DB: FK 아님(#72 결정 1)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
