@@ -21,10 +21,13 @@
      세속 주제까지 복음 곡이 되는 정위 모순으로 **제거**됨(见 _build_prompt 주석).
   ⚠️ 注意 easy-generate(Prompt to song) 才有结构化 styles:["gospel"] 枚举，但它**无 lyrics 字段**；
   本产品是用户歌词生曲 → 用 generate + 自由文本 prompt 是正确的（非遗漏）。
-- 未实现但已核对的相邻能力（future/out-of-scope，均非歌词生曲主路径）：
-  easy-generate(prompt→song)、song/extend、song/remix、song/vocal-clone(vocal_id 源)、
-  instrumental/generate+query(prompt-only)、lyrics/generate、song/stem(分轨)、
-  song/region-edit(改词)、soundtrack/track/video/tts(其他产品线)、files/upload 分块版(uploads-*)。
+- 相邻能力（均已按官方协议核实并**已实现**，见下方各方法；除 transcribe/describe 外全部接线）：
+  easy-generate(prompt→song, L633)、song/extend(L382)、song/remix+cover(L417)、
+  song/vocal-clone(vocal_id 源, L550 — 产品暂停, `settings.enable_vocal_clone` 默认 False→501 fail-closed)、
+  instrumental/generate+独立 query(L611/L451)、lyrics/generate(L667)、song/stem 分轨(L567)、
+  song/region-edit 改词(L582)、files/upload(L514)。
+  ⚠️ 仍未实现（官方有端点但本产品未接线）：transcribe、describe；
+  超出音乐平台范围（其他产品线）：soundtrack/track/video/tts、files/upload 分块版(uploads-*)。
 - 无官方 webhook/CallbackURL → 走轮询（同 Suno）；回调优势仅火山 GenBGM 享有。
 
 实现要点：

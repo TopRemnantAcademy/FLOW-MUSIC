@@ -3,7 +3,7 @@
 流程:
   POST /api/billing/checkout            → 创建 PaymentOrder + 返回收银入口(checkout_url)
   POST /api/billing/orders/{id}/confirm → 属主确认支付(manual/运维对账模式), 触发升档
-  POST /api/billing/webhook/{provider}  → 供应商异步回调(验签后落库升档): stripe | wechat | alipay
+  POST /api/billing/webhook/{provider}  → 供应商异步回调(验签后落库升档): stripe | wechat | alipay | paypal
   POST /api/billing/kakao/approve       → KakaoPay 단건결제 최종 승인(pg_token) 후 승격
   POST /api/billing/naver/approve       → NaverPay 서버 승인(paymentId) 후 승격
   GET  /api/billing/orders             → 我的订单

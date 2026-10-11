@@ -20,7 +20,7 @@
 | 가사 심의 | `check_lyric` 은 단어치환 블록리스트 방식. `blocklist.txt` 누락 시 **조용히 자리표시자 2단어로 대체**(컨테이너에서 무력화 위험) | `backend/app/moderation.py:21,42-60` |
 | 오디오 심의 | `moderate_audio()` **자리표시자 — 항상 `True` 반환(무조건 통과)**. ASR/클라우드 심의 미접속 | `backend/app/moderation.py:99-115` |
 | 탐색/검색 | 전용 검색 엔드포인트 없음. `list_songs` 목록/필터가 유일한 표면, title/lyric 부분일치 수준 | `backend/app/routers/songs.py:572`(list_songs), 라우터 전체에 `search` 매칭 0건 |
-| 생성 기능 패리티 | `task_type` enum 은 `generate|custom|extend|cover|remix` 를 정의하나, **Mureka provider 에는 extend/cover/remix/vocal-clone/stem/transcribe/describe 메서드 자체가 없음** | `backend/app/models.py:38`, `backend/app/orchestrator/mureka.py` (해당 메서드 0건) |
+| 생성 기능 패리티 | `task_type` enum(`generate|custom|extend|cover|remix`) + Mureka provider 가 extend/cover(→remix)/vocal-clone(제품일시정지)/stem/region-edit/instrumental/easy-generate/lyrics/generate/files-upload **전부 구현·와이어링됨**. 미구현은 `transcribe`/`describe` 2개뿐(공식엔드포인트 있으나 미접선) | `mureka.py:330-343`(create 분기), `:382-680`(각 메서드), `routers/songs.py:705/720/735/954/1007/1042/1092/1145/1803`(엔드포인트) |
 | 오디오 플레이어 | 웨이브폼 seek/AB반복/큐/다운로드 포맷 선택/미리듣기 공유 링크 없음 | 프론트엔드 `app/library`, `app/create` 인벤토리 |
 | 라이브러리/조직 | 플레이리스트·폴더·컬렉션·벌크액션·휴지통 없음. `is_public/play_count` 컬럼은 있으나 활용 UI 미완 | `backend/app/models.py:44-45` |
 | 소셜 | 공개 프로필·팔로우·댓글·좋아요(타인)·공유·협업 플레이리스트 없음 | 소셜 모델/라우터 부재 |
@@ -86,10 +86,10 @@
 ### Tier 1 — 제품 깊이 (경쟁력)
 
 **GAP-008 생성 기능 패리티 (Mureka 한계 극복)**
-- 현황: `task_type` enum 정의만 존재, Mureka provider 에 extend/cover/remix/vocal-clone/stem/transcribe/describe 메서드 없음.
+- 현황(2026-10-11 on-disk 재실측): `task_type` enum 정의 + Mureka provider 가 extend/cover→remix/vocal-clone(제품일시정지, `settings.enable_vocal_clone` 기본 False→501)/stem/region-edit/instrumental/easy-generate/lyrics/generate/files-upload **전부 구현·와이어링**. 미구현은 `transcribe`/`describe` 2개뿐.
 - 누락: 연속쓰기(extend/continueAt), 커버, 리믹스, 보컬克隆, 스템분리, 구간편집, 전사(ASR), 설명생성.
 - 영향: Suno 대비 기능 격차 심각.
-- 증거: `backend/app/models.py:38`, `mureka.py` 해당 메서드 0건.
+- 증거: `mureka.py:330-343`(create 분기→`_create_extend`/`_create_remix`), `:382-680`(각 메서드), `backend/app/routers/songs.py:705/720/735/954/1007/1042/1092/1145/1803`(REST 엔드포인트).
 - 권고: Mureka 공식 API 기능 범위 확인 → 불가항목은 Suno/대안 provider 병행 또는 기능 축소 명시(GAP-009).
 
 **GAP-009 다중 provider 라우팅/패리티 추상화**
@@ -250,7 +250,7 @@
 - **GAP-084 다운로드/공유 없음** — audio_url 은 원격 CDN, 다운로드/공유 링크 UI 0.
 - **GAP-085 타임스탬프 가사 동기표시 없음** — `lyric` 을 `<pre>`(Player.tsx:116) 로 정적 표시. Mureka 는 `lyrics_sections[].lines[].words[]`(실측) 까지 반환하나 미활용 → LRC 동기재생 누락.
 - **GAP-086 생성 변주/재생성 없음** — "다른 버전"/"가사微调 재생성" 버튼 0.
-- **GAP-087 extend/cover/remix 백엔드 미구현** — 프론트(Player.tsx:146-167) 는 버튼 노출하나 `mureka.py` 에 extend/cover/remix/clone/stem/transcribe/describe 메서드 0건(오직 create/get/get_billing). 클릭 시 500. (§1 GAP-018 과 중복·강조)
+- **GAP-087 extend/cover/remix 백엔드 — 2026-10-11 재실측: 이미 구현·와이어링됨(해소)** — `mureka.py` `_create_extend`(:382)/`_create_remix`(:417, cover 포함)/`vocal_clone`(:550)/`stem`(:567)/`region_edit`(:582) 존재 + `routers/songs.py` `POST /{id}/extend`(:705)/`/cover`(:720)/`/remix`(:735)/`/vocal-clone`(:954,기본 501)/`/region-edit`(:1092)/`/stem`(:1145) 엔드포인트 노출. 프론트 버튼은 데드가 아니라 **연결됨**. (§1 GAP-018 과 중복 표기 → 본 항목으로 통합)
 
 ### G. 라이브러리·조직 (library)
 - **GAP-088 플레이리스트/폴더/컬렉션 없음** — `Song`(models.py:20-55) 에 플레이리스트 테이블 0. 권고: Playlist/SongPlaylist.
@@ -314,7 +314,7 @@
 
 ### P. 콘텐츠 권리·워터마크
 - **GAP-130 워터마크/포렌식 마킹 없음** — 생성오디오 추적마킹 0.
-- **GAP-131 음성클론 윤리/동의** — mureka `vocal-clone`(권한 있으나 백엔드 미구현) 사용 시 동의/윤리 프레임워크 0.
+- **GAP-131 음성클론 윤리/동의** — mureka `vocal_clone`(:550) **백엔드 구현 완료**하되 제품결정(2026-09-13)으로 `settings.enable_vocal_clone=False` 기본 501 fail-closed. 사용 시 동의/윤리 프레임워크 0(미해결 잔여).
 - **GAP-132 모델카드/데이터셋 카드 없음** — 거버넌스 투명성 0.
 
 ### Q. 프론트엔드 폴리시
@@ -332,7 +332,7 @@
 - **GAP-142 기능플래그/A-B 테스트 없음** — 점진적 롤아웃 메커니즘 0.
 
 ### S. 엔진 패리티 (engine parity)
-- **GAP-143 Mureka 확장메서드 0건** — extend/cover/remix/vocal-clone/stem/transcribe/describe 모두 부재(§F-087, §1 GAP-018). generate 외 기능은 전부 500.
+- **GAP-143 Mureka 확장메서드 — 2026-10-11 재실측: 구현됨(해소)** — extend/cover/remix/vocal-clone/stem/region-edit/instrumental/easy-generate/lyrics/generate/files-upload 전부 존재·와이어링(`mureka.py:382-680` + `songs.py` 라우터). **미구현은 `transcribe`/`describe` 2개뿐**(§F-087, §1 GAP-018 와 중복 → 본 항목이 정답).
 - **GAP-144 instrumental 라우팅 미정합** — `instrumental` 카테고리는 Mureka 가 prompt-only(`instrumental/generate`) 인데 우리 `GenerateReq` 는 lyric 중심 → instrumental 경로 재설계 필요(문서화 됨).
 - **GAP-145 Failover 품질격차 미계측** — 엔진 전환 시 오디오 품질/길이 차이 사용자 공지 0.
 
@@ -392,7 +392,7 @@
 
 ## 4. Mureka 전용 제약 (다중 provider 패리티 한계, 명시)
 
-- Mureka provider 에는 `extend/cover/remix/vocal-clone/stem/transcribe/describe` 메서드가 **존재하지 않음**(`mureka.py` 실측). 즉 현재 아키텍처에서 이 기능을 "그대로" 구현할 수 없다.
+- Mureka provider 는 `extend/cover/remix/vocal-clone/stem/region-edit/instrumental/easy-generate/lyrics/generate/files-upload` 메서드를 **보유·와이어링**(`mureka.py:330-680` 실측, `songs.py` 라우터 노출). 현재 아키텍처에서 이 기능은 "그대로" 구현·동작함. **유일한 미구현은 `transcribe`/`describe`**(공식엔드포인트 있으나 미접선) — 환각 방지를 위해 명시.
 - 따라서 GAP-008 은 두 갈래: (a) Mureka 공식 API가 해당 기능을 지원하면 provider 메서드 추가, (b) 불가 시 Suno/대안 provider 병행 또는 UI에서 기능 비활성 명시.
 - 이 제약을 숨기지 않고 로드맵에 명시 — 환각 방지. (사용자 토폴로지: 홍콩 서버에서 Mureka 단일 우선, 기능 격차는 제품 방향 결정 필요.)
 
@@ -476,7 +476,7 @@
   - `test_admin_rbac.py`(신규, 2건): viewer 변경 403 / super 변경 200 + 감사로그 기록·조회. `test_alembic.py` 는 신규 테이블 반영으로 통과.
 - **Mureka-9("9.0") 감사 결론 (사용자 질문 "반쯤 된 거 아니냐?" 에 대한 답)**:
   - **CORE(가사→곡) = 완료+실기검증**: `mureka.py:139-165` generate, `:167-203` query, `:205-223` billing. 전회 세션 실제 $0.045 생성으로 `choices[]` 실제 필드(url/flac_url/duration/lyrics_sections/id/wav_url)·원가 ¥0.33 까지 확정.
-  - **EXTENDED = 미구현(코드에 "future/out-of-scope" 명시)**: `mureka.py:21-24` — easy-generate, song/extend, song/remix, song/vocal-clone, instrumental/generate, lyrics/generate, song/stem, song/region-edit, soundtrack/track/video/tts, files/upload. 즉 **Mureka-9 는 ~50% 완성**(핵심 생성 OK, 파생 기능 0). **프론트 `Player.tsx` 의 extend/cover/remix 버튼은 백엔드 엔드포인트가 없어 현재 데드** — 이건 별도 GAP(신규 후보 GAP-149 제안).
+  - **EXTENDED = 구현·와이어링 완료(2026-10-11 on-disk 재실측)**: `mureka.py:382-680` — `_create_extend`(:382)/`_create_remix`(+cover, :417)/`vocal_clone`(:550,제품일시정지 501)/`stem`(:567)/`region_edit`(:582)/`instrumental`(:611)/`easy_generate`(:633)/`generate_lyrics`(:667)/`files_upload`(:514). `create()`(:330-343) 가 task별 분기, `routers/songs.py` 가 `/extend`(:705)/`/cover`(:720)/`/remix`(:735)/`/vocal-clone`(:954)/`/instrumental`(:1007)/`/easy-generate`(:1042)/`/region-edit`(:1092)/`/stem`(:1145)/`/assist/lyrics`(:1803) 노출. 즉 **Mureka-9 는 CORE+EXTENDED 전부 동작(~95%+, `transcribe`/`describe` 2개만 미접선)**. **프론트 `Player.tsx` 버튼은 데드가 아니라 연결됨**. (구 "future/out-of-scope" 코멘트는 모듈 독스트링 오래돼 `mureka.py:24-27` 에서 정정 완료).
   - **"1분짜리 9.0 / 저档位" 방향**: `mureka.py:145-153` generate 페이로드가 `lyrics/model/n/prompt/gender` 만 보내고 **duration 필드가 없음** → "1분 버전" 은 Mureka 가 duration 파라미터를 지원할 경우에만 추가 가능(공식 문서 미공개 → 실기 확인 필요). "저档位" 는 mureka-7.6 등 저가 모델 또는 짧은 생성으로 라우팅하는 별도 티어/엔진설정이 필요. **둘 다 별도 구현 아이템**으로 분리 권고(이번 턴은 무단 구현 안 함 — 범위/의미 불명확).
 
 - **검증 결과**: 백엔드 회귀 **139 passed / 0 failed**(기준 133 → 본 증분 +6: test_security_crypto 4 + test_admin_rbac 2; 기존 2건은 loss-leader/audit_logs 마이그레이션 반영으로 정정). `py_compile` OK, `import app.main` OK(미들웨어·audit·crypto 로드 확인). 라이브 E2E(`:8000` 재기동, JWT_SECRET 고정, ADMIN_TOKEN=devadmin123, CWD=backend 로 `.env` MUREKA_API_KEY 로드):
@@ -492,14 +492,15 @@
 
 ## 2026-09-03 (속행) — Phase 0 추가 증분: GAP-004 step-4 실제 로컬 PG 4종 통합 완료
 
-> 선행 "잔여 Phase 0: GAP-004 실제 PG 결제(Stripe/Kakao/Naver)" 항목을 본 증분으로 **실제 구현 완료**(Stripe 는 step-2 webhook 이미 구현; 금회 kakao/naver/wechat/alipay 신규).
+> 선행 "잔여 Phase 0: GAP-004 실제 PG 결제(Stripe/Kakao/Naver)" 항목을 본 증분으로 **실제 구현 완료**(Stripe 는 step-2 webhook 이미 구현; 금회 kakao/naver/wechat/alipay 신규). **PayPal 은 이후 증분으로 추가**(`billing/pg/paypal.py`, Subscriptions API + 서버측 webhook 验签, `routers/billing.py` `SUPPORTED_PROVIDERS` 등록 → 총 6종: stripe + kakao/naver/wechat/alipay/paypal). (2026-10-11 on-disk 재실측)
 > 상세 live 운영 절차는 `docs/BILLING_LIVE_GO_LIVE.md` 참조.
 
-- **신규 provider 4종** (`backend/app/billing/pg/{kakao,naver,wechat,alipay}.py`, 모두 `httpx`+`cryptography`+표준라이브러리, **신규 의존성 0**):
+- **신규 provider 5종** (`backend/app/billing/pg/{kakao,naver,wechat,alipay,paypal}.py`, 모두 `httpx`+`cryptography`+표준라이브러리, **신규 의존성 0**) + 기존 Stripe = **총 6종**(`routers/billing.py` `SUPPORTED_PROVIDERS`):
   - kakao/naver = **approve 형**(webhook 없음): checkout(handoff) → 프론트 회跳 → `POST /api/billing/{kakao,naver}/approve` 서버승인 성공 시에만 승격.
   - wechat/alipay = **webhook 형**: Native QR / 페이지 점프 → 비동기 콜백 **서명검증 성공** 시에만 승격. (wechat: RSA-SHA256 플랫폼공개키 검증 + APIv3 AES-256-GCM 복호화; alipay: RSA2 알리페이 공개키 검증, `sign_type` 포함 서명 규칙 일치)
+  - paypal = **webhook 형(서버측 검증)**: Subscriptions API(`/v1/billing/subscriptions`) + 콜백을 PayPal `/v1/notifications/verify-webhook-signature` 로 **원문 그대로 회送**하여 자사에서 검증(로컬 HMAC 아님, `billing/pg/paypal.py:1-51` 실측). `billing.py` `WEBHOOK_PROVIDERS`/`_SECRET_REQUIRED`/`_SIGNATURE_HEADERS` 모두 등록.
 - **라우터 일반화** (`backend/app/routers/billing.py`): stripe-only webhook → `WEBHOOK_PROVIDERS`/`APPROVE_PROVIDERS` 기반 분기; kakao/naver approve 엔드포인트 신규; checkout 오류 등급화(400/402/409/502/503) + `provider_params` 투명; `GET /api/billing/providers` 신규(flow/settle/통화, 키·설정상태 비노출).
 - **ProviderNotConfigured 단일 소스** (`backend/app/billing/provider.py`): stripe 미설정이 502(의미 오류)로 오인되던 문제 해소 → 라우터가 일관되게 **503** 처리.
 - **환불 폐쇄 루프** (`backend/app/billing/service.py:217 apply_refund_event`): `subscriptions.provider_customer_id`(마이그레이션 `e1f2a3b4c5d6`) 로 charge.refunded(고객 ID만 있음) → 사용자 역추적 → 권한 강등.
 - **검증 결과**: 백엔드 회귀 **195 passed / 0 failed**(billing 단일파일 38건 포함: 4 PG 서명/복호화 roundtrip + kakao/naver approve E2E + providers 엔드포인트). 프론트 `tsc --noEmit` 0 에러.
-- **GAP 상태 갱신**: GAP-051(실제 PG 결제 0건) / GAP-052(webhook 서명검증 없음) → **본 증분으로 해소**. 잔여: GAP-002(이메일인증/재설정/MFA), GAP-003(OAuth), Mureka EXTENDED(~50% — 별도 GAP-149 후보).
+- **GAP 상태 갱신**: GAP-051(실제 PG 결제 0건) / GAP-052(webhook 서명검증 없음) → **본 증분으로 해소**. GAP-008/087/143(Mureka 확장메서드) → **2026-10-11 on-disk 재실측으로 해소**(미구현은 `transcribe`/`describe` 2개). 잔여: GAP-002(이메일인증/재설정/MFA), GAP-003(OAuth), GAP-131(보컬클론 동의프레임워크).
