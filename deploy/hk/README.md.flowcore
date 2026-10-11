@@ -1,0 +1,100 @@
+# FLOW — 홍콩 노드 (원격 Qdrant 벡터 저장소)
+
+## 개요
+
+`anistar.studio` 도메인의 Tencent Cloud Lighthouse (Ubuntu 24.04, 2vCPU/4GB/60GB, 스왑 2GB).
+FLOW 다지역 분리에서 **홍콩 측은 벡터 인덱스만** 호스트한다. 백엔드 API(구독자/PII/채팅)
+는 한국 박스(`deploy/kr`)가 단독 운영 → "한국의 한 서비스" 원칙과 일치.
+
+```
+  한국 박스 (deploy/kr, backend)                홍콩 박스 (deploy/hk, Qdrant)
+  ┌──────────────────────────┐                ┌──────────────────────────┐
+  │ backend (FastAPI)         │  QDRANT_URL    │ qdrant :6333 (API 키)     │
+  │  · SQLite 메인            │ ──────────────▶│  · 벡터 인덱스만           │
+  │  · SQLite korea_pii.db    │  +API 키       │  · 콘솔 방화벽: 한국IP만   │
+  └──────────────────────────┘                └──────────────────────────┘
+```
+
+## 실행
+
+```bash
+cd deploy/hk
+cp .env.hk.example .env.hk
+# .env.hk 편집: QDRANT_API_KEY=openssl rand -hex 32 결과 채움
+docker compose --env-file .env.hk up -d
+curl -s http://localhost:6333/health     # {"status":"ok"}
+```
+
+## 한국 노드 연결
+
+`deploy/kr/.env.kr` 에:
+```
+QDRANT_URL=http://43.128.155.138:6333
+QDRANT_API_KEY=<위에서 발급한 키>
+```
+
+## 필수: Tencent 콘솔 방화벽
+
+Lighthouse 는 UFW 가 아닌 **콘솔 방화벽**이 1차 방어선. 6333/6334 를 열되
+**소스 IP를 한국 박스 공인 IP로만** 제한한다(0.0.0.0/0 개방 금지 — API 키만으로는 부족).
+
+## TLS 업그레이드 (프로덕션 권장)
+
+MVP 는 http + API 키. 교차 리전 평문 전송은 키 탈취 시 벡터 유출 위험.
+업그레이드 옵션:
+1. Qdant 자체 TLS (`QDRANT__SERVICE__HTTPS__` + 인증서) — 도메인 불필요.
+2. 또는 Caddy/Traefik 로 TLS 터미네이션 후 내부 http 전달.
+3. 또는 Qdrant Cloud 로 이전(관리형 TLS).
+
+## 현재 상태 (2026-10-01)
+
+- **FLOW 백엔드가 이 박스에서 운영 중** (`https://anistar.studio/health` → 200, Let's Encrypt).
+  - 초기 설계(한국 박스 단독)에서 변경: 도메인을 확보한 이 박스가 주 진입점이 되었다.
+  - ⚠ `KOREA_DATABASE_URL` 은 미설정 → `SubscriberSensitive` 가 메인 DB 에 함께 저장된다.
+    즉 **PII 의 한국 물리 분리는 아직 미달성**. 한국 전용 서버가 생기면 그 DB URL 로 설정할 것.
+- **Google 로그인 활성화**: `GET /auth/google/config` → `{"enabled":true,...}`.
+  프론트가 런타임에 조회하므로 APK 재빌드 불필요.
+- `/ready` 는 `qdrant:UnexpectedResponse` 만 남아 503 — 컬렉션 미생성(최초 인제스트 전 정상).
+- **음악 백엔드(FLOW CCM) 기동 완료**: `https://music.anistar.studio/health` → 200 `{"status":"ok"}`,
+  Let's Encrypt 발급됨. Mureka 키 실측 유효(`GET /v1/account/billing` 200,
+  `concurrent_request_limit=1` → `MUREKA_MAX_CONCURRENT=1` 로 맞춤).
+- 음악 APK 재빌드 완료(`builds/flow-ccm-v1.0.0-c2-*.apk`): 번들에
+  `https://music.anistar.studio` 가 구워졌고 구 플레이스홀더 `api.flowccm.example.com` 은 0건.
+
+## 음악 백엔드(FLOW CCM) 활성화 절차
+
+DNS 확인됨: `music.anistar.studio` → 43.128.155.138. 구성은 **이미 준비되어 있고 기본은 미기동**
+(`profiles: ["music"]`) 이므로 지금 스택에는 영향이 없다.
+
+1. `ai-music-platform/backend` 를 서버 `/opt/flow/ai-music-platform/backend` 로 업로드
+2. `cp .env.music.example .env.music` 후 **`JWT_SECRET` / `MUREKA_API_KEY` 필수 입력**
+   (둘 다 비우면 `:?` 때문에 배포가 실패한다)
+3. `Caddyfile.music` 의 사이트 블록을 `Caddyfile` 끝에 병합
+4. 기동:
+   ```bash
+   cd /opt/flow/deploy/hk
+   docker compose -p flow-hk --env-file .env.hk --profile music up -d --build
+   docker compose -p flow-hk --env-file .env.hk up -d --force-recreate caddy
+   ```
+   ⚠ `--env-file .env.music` 을 **넘기지 않는다** — JWT_SECRET/MUREKA_API_KEY 는
+   `env_file: .env.music` 로 컨테이너에 주입되며, compose 보간(`${VAR:?}`)으로 쓰면
+   music 과 무관한 명령(caddy 재생성 등)까지 `required variable ... missing a value`
+   로 실패한다(실측 2026-10-01 → 보간 제거로 해결).
+5. `https://music.anistar.studio/health` 확인 후, 음악 APK 를
+   `NEXT_PUBLIC_API_BASE=https://music.anistar.studio` 로 **재빌드**(빌드타임 인라인이므로 필수).
+
+### 음악 APK 재빌드 실제 절차 (2026-10-01 검증)
+```bash
+# 0) 사전: safe-delete shim 이 대량 삭제(>50건)를 막아 build/sync 가 죽는다.
+#    → 세션 id 를 비워 shim 을 비활성화하고 실행한다.
+export CODEBUDDY_SESSION_ID= CLAUDE_SESSION_ID=
+cd ai-music-platform/frontend
+node scripts/build-apk.mjs --api=https://music.anistar.studio   # out/ 생성 + 자체검증
+cd ../native && ./node_modules/.bin/cap sync android
+bash scripts/build-android.sh assembleRelease                   # JDK21 -D 주입됨
+```
+- shim 때문에 `build-apk.mjs`(rmrf) 와 `cap sync`(1312건 삭제) 가 **모두 실패**했고,
+  gradle 만 돌면 "BUILD SUCCESSFUL" 이 떠도 산출물은 **갱신되지 않는다**(363 up-to-date).
+  → 반드시 `WEB_RC / SYNC_RC / APK_RC` 를 각각 확인할 것.
+- 산출물 검증: `grep -rl "music.anistar.studio" out/` (10건) 및
+  `grep -rl "api.flowccm.example.com" out/` (0건 이어야 정상).

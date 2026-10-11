@@ -1,0 +1,144 @@
+# ───  RAG — 클라우드 배포 전용 requirements ─────────────────────
+# 로컬 ML 모델(sentence-transformers, fastembed 등) 제거 → 메모리 ~200MB
+# 임베딩: HF Inference API (HF_TOKEN 필요)
+# Reranker: none 또는 Cohere API (COHERE_API_KEY 선택)
+# Qdrant: 서버 모드 (QDRANT_URL=https://xxx.qdrant.tech)
+#
+# ⚠ 이 파일은 Dockerfile(:21-22) 이 **실제로 설치하는 유일한 requirements** 다.
+#   requirements.txt 와 불일치하면 로컬에선 통과하고 배포에서만 죽는다.
+#   감사 도구: `python scripts/check_deploy_deps.py` (HARD/SOFT 분류 전수 대조)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ----- Web -----
+fastapi==0.141.1  # 2026-08-29 pip-audit: starlette 0.41.3 9 vulns → 신규 fastapi가 안전 starlette 강제
+# [P0] main.py:17 이 `starlette.middleware.base` 를 **직접** import 한다.
+# 지금까지는 fastapi 의 전이 의존성에 기대 왔으나(미선언 직접 의존), fastapi 업그레이드
+# 시 해상도에 따라 깨질 수 있으므로 명시 선언한다(fastapi 요구: starlette>=0.46.0).
+starlette==1.6.0
+uvicorn[standard]==0.32.1
+python-multipart==0.0.31  # pip-audit: 6 vulns(DoS/path traversal) → 0.0.31
+pydantic==2.13.5  # fastapi 0.141.1 요구 범위로 승격
+pydantic-settings==2.15.0  # pydantic 2.13 동반 승격
+httpx==0.28.1
+
+# ----- LLM -----
+google-genai==2.20.0  # 0.3.0 이 pillow<12.0.0 강제 → Pillow 12.3.0 보안 업그레이드를 위해 승격. API(Client/types/aio.models)는 통일 SDK로 호환
+openai==1.59.6
+# [2026-09-27] anthropic 을 *다시 설치* 한다. 배포 프로필에서 제외했던 조항이
+#   아래 주석 블록(124행)에 잘못 묶여 함께 주석 처리된 데서 비롯한 사고다(실측).
+#   증거: .env.production = LLM_PROVIDER=gemini + LLM_FALLBACK_CHAIN=claude +
+#   ANTHROPIC_API_KEY 설정. 즉 배포 환경은 claude 를 *의도적으로 폴백 대상으로 쓰고*
+#   있는데 이미지에는 anthropic 이 없어 get_llm("claude") 가 ImportError 로 죽고,
+#   fallback.py:193 의 `i < len(chain)-1` 조건(chain=["gemini","claude"] 의 맨 뒤)과
+#   맞물려 "폴백 없이" RuntimeError 를 던졌다. → gemini 장애 시 서비스 전체 응답 실패.
+#   requirements.txt:15(`anthropic>=0.40.0`) 와 버전 범위를 맞춘다.
+anthropic>=0.40.0
+
+# ----- Vector DB (서버 모드 — embedded 드라이버 불필요) -----
+qdrant-client==1.12.2
+
+# ----- Database -----
+sqlalchemy==2.0.36
+alembic==1.14.0
+
+# ----- Korean text -----
+kss==6.0.5
+
+# ----- Tracing -----
+langfuse==2.57.0
+# wrapt: Aikido AIKIDO-2026-418522(race condition / use-after-free, 영향 1.17.0~2.3.0, 수정 2.4.0)
+#   ⚠ 종전 1.17.3 고정은 **취약 범위 안**이었다(1.17.0 ≤ 1.17.3 ≤ 2.3.0) — 취약성이 남았다.
+#   수정판 2.4.x 는 langfuse==2.57.0 의 `Requires-Dist: wrapt (>=1.14,<2.0)` 와 충돌해 설치 불가
+#   (실측: venv/Lib/site-packages/langfuse-2.57.0.dist-info/METADATA).
+#   → **1.16.0 으로 하향 고정**: 1.17.0 미만이라 취약 범위 밖 + langfuse 상한(<2.0) 충족.
+#     wheels 존재 확인(cp311 manylinux/musllinux/win).
+#   상세 및 Aikido 자동수정 브랜치 기각 사유: requirements.txt 하단 주석 참고.
+wrapt==1.16.0
+
+# ----- Document loaders -----
+pypdf==6.19.0  # pip-audit: 37 vulns → 6.15.0 → CVE-2026-84309/84310/84311 → 6.16.1 → 6 条 GHSA @6.16.1 → 6.19.0 (2026-10-08, requirements.txt:41 과 일치)
+python-docx==1.1.2
+# pymupdf==1.25.1  REMOVED — Artifex AGPL-3.0 (Aikido GNU AGPL 3.0 finding).
+# 텍스트 추출만 사용하므로 BSD 인 pypdf(pypdf==6.19.0, 위 라인) 로 대체.
+Pillow==12.3.0  # pip-audit: 24 vulns → 12.3.0
+
+# ----- Utils -----
+python-dotenv==1.2.2  # pip-audit: 1 vuln → 1.2.2
+PyYAML==6.0.2
+numpy>=2.0.2  # py3.13 에서 qdrant-client 1.12.2 가 numpy>=2.1.0 요구(CI 실측) → 하한 완화
+
+# ═════════════════════════════════════════════════════════════════════════════
+# [P0 추가] 배포 경로에서 **누락되어 있던** 런타임 의존성
+# ═════════════════════════════════════════════════════════════════════════════
+# 감사 근거(`scripts/check_deploy_deps.py` + `scripts/check_import_reach.py`):
+#   컨테이너 기동 실패(HARD, try/except 가드 없는 최상위 import + main.py 도달):
+#     · apscheduler    backend/app/services/media_publisher.py:20  (main → media_publisher)
+#     · cryptography   backend/app/security/encryption.py:19       (main → security → encryption)
+#   기능 조용히 비활성(SOFT, ImportError 가드/lazy import):
+#     · redis          middleware/rate_limit.py:56  (REDIS_URL 없으면 인메모리 폴백)
+#     · pywebpush      services/push_service.py:134 (VAPID 키 없으면 미사용)
+#     · firebase_admin services/push_service.py:208 (FCM 자격증명 없으면 미사용)
+
+# [HARD] 예약 발행 / 매일 말씀 발송 스케줄러.
+# 누락 시 uvicorn 기동 자체가 ImportError 로 실패한다. D26 과 직결 — 배포본에 없으면
+# "예약 발행이 조용히 죽어 있는" 상태가 된다(로컬 requirements.txt:55 에만 존재했음).
+apscheduler==3.10.4
+
+# [HARD] PII 필드 암호화(Fernet). security/encryption.py 가 모듈 최상위에서 import 하고
+# main → security → encryption 경로로 기동 시 반드시 도달한다. 누락 시 즉시 기동 실패.
+cryptography==50.0.1
+
+# [SOFT] 속도 제한 공유 저장소. uvicorn `--workers 2`(Dockerfile CMD) 에서 인메모리
+# 리미터는 워커별로 독립 동작 → 실효 예산이 2배(120 RPM) 로 늘고 차단이 전파되지 않는다.
+# 패키지 자체는 가볍고, REDIS_URL 미설정 시 기존 인메모리 폴백으로 동작(무해).
+redis==8.1.0
+
+# [SOFT] Web Push(VAPID). 설정(vapid_public_key/vapid_private_key)은 Settings 에 선언되어
+# 있어 실제 운용 경로다. 누락 시 키를 넣어도 발송이 조용히 실패한다.
+pywebpush==2.5.0
+
+# [SOFT] FCM(Android 네이티브). firebase_credentials_json/_path 모두 Settings 에 선언됨.
+# FLOW 는 Capacitor Android 가 주 클라이언트이므로 이 경로가 실제 1차 푸시 채널이다.
+firebase-admin==6.6.0
+
+# ═════════════════════════════════════════════════════════════════════════════
+# [P0 추가] rank-bm25 — 2026-09-25 실측: 위 "의도적 제외" 사유가 **사실과 달랐다**
+# ═════════════════════════════════════════════════════════════════════════════
+# 위 주석은 "`sparse_index.py` 는 main.py:131 시작 워밍업 전용" 이라고 적었으나,
+# **실제로는 검색 주 경로** 다. `services/retriever.py:275-278` 의 하이브리드 검색이
+# Qdrant sparse 실패 시 `_bm25_sparse()` 로 폴백하고, 그 안의 `BM25Index.search()`
+# 이 `rank_bm25.BM25Okapi` 를 **무방비로 import** 한다(`sparse_index.py:93`).
+#   → 즉 이 패키지가 없으면 혼합검색 폴백이 ModuleNotFoundError 로 죽고,
+#     `startup_checks.check_sparse_dependency` 가 이를 ERROR 로 잡아
+#     strict 모드에서는 **기동 자체가 거부** 된다(SPARSE_DEP_MISSING).
+#   → 같은 종류의 드리프트가 sentence-transformers 건(210회 ModuleNotFoundError)
+#     과 동일하며, `docs/BACKEND_SYSTEM_2026-09-13.md:474` 에 이미 기록돼 있었다.
+# kiwipiepy 와 달리 **pure-python wheel 이 있어** slim 이미지에서도 설치가 깨지지 않는다.
+# (numpy 는 이미 이 파일에 선언돼 있어 추가 전이 의존성도 없다)
+rank-bm25==0.2.2
+# ═════════════════════════════════════════════════════════════════════════════
+# [참고] rank-bm25 이관 이후 남은 "의도적 제외" 항목 (master 기준)
+# ═════════════════════════════════════════════════════════════════════════════
+# rank-bm25
+#   -> **제외 목록에서 제거됨**. 2026-09-25 실측 결과 위 "워밍업 전용" 사유가 사실과 달랐고
+#      배포측 주 경로가 무방비 import 한다 → 본 파일 상단 [P0 추가] 란에 정식 선언됐다.
+#      (추가 근거: PR#21 `requirements-test.txt` 는 CI 兜底, 실제 배포는 이 파일의 rank-bm25==0.2.2)
+# kiwipiepy
+#   **여전히 제외**. 한국어 형태소 분석 전용이며 `sparse_index.py:43` 이 lazy import 하며
+#   미설치 시 한국어 토크나이저 없이 동작한다(필수 경로 아님).
+#   테스트도 이 패키지를 요구하지 않는다(test_bm25_sync.py / test_rag_startup_checks.py
+#   어디에도 `_module_available("kiwipiepy")` 호출 없음 — PR#21 에서 확인).
+# psutil
+#   services/reranker.py:130 lazy import 이며 미설치 시 `/proc/meminfo` 폴백이 있어
+#   Linux 컨테이너에서 동작에 영향 없다.
+# plyer
+#   logging_setup.py:260 의 **Windows 전용** 데스크톱 토스트. Linux 컨테이너에서
+#   `sys.platform.startswith("win")` 분기로 진입 자체가 불가.
+# cohere / fastembed / sentence-transformers
+#   파일 상단 설계대로 API 기반 임베딩·선택적 reranker 를 쓰는 배포 프로파일이므로 제외.
+#   (cohere 필요 시 아래 주석 해제)
+#   ※ anthropic 은 위 LLM 블록에서 *의도적으로* 설치한다. 여기서 제외하면
+#     .env.production 의 LLM_FALLBACK_CHAIN=claude 가 동작하지 않아 폴백 체인이
+#     죽는다(2026-09-27 실증). 제외 목록에는 embedding/reranker 패키지만 남긴다.
+# ----- 선택: Cohere Reranker (API 기반, 메모리 절약) -----
+# cohere==5.13.5

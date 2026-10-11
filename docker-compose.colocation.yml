@@ -1,0 +1,38 @@
+# =========================================================
+# FLOW 共置覆盖文件（与音乐平台共用同一个 Caddy 时使用）
+#
+# 背景（实测核对，2026-09-16）：
+#   · FLOW 自带 caddy 发布 443:443 与 8501:8501（docker-compose.prod.yml caddy 段），
+#     与音乐平台的 Caddy（--network host，独占 443）争抢 443 → 二者不能同时起。
+#   · 跳过 FLOW caddy 后，ui / backend 服务本身**没有**对外端口
+#     （只挂在 gospel-network 桥上），宿主机 Caddy 将无法到达它们。
+#   · 音乐平台 compose 把 API 绑在 127.0.0.1:8000（docker-compose.yml:108），
+#     故 FLOW 的 backend 必须错开端口 → 这里用 8001。
+#
+# 因此本文件只做一件事：把 ui / backend 以 127.0.0.1 暴露给宿主机 Caddy。
+# 仅绑 127.0.0.1 是有意的——不直接对外，与音乐平台 T6.1 的安全口径一致。
+#
+# 用法（注意必须显式列出服务名，不含 caddy）：
+#   docker compose -f docker-compose.prod.yml -f docker-compose.colocation.yml \
+#     --env-file .env.production up -d --build migrate backend ui qdrant
+#
+# ⚠ compose 的 ${VAR:?} 在每条子命令上都会插值，--env-file 不可省略。
+#
+# ⚠ `migrate` 必须列在命令里（2026-09-17 新增）：它跑 `alembic upgrade head`，
+#   backend 以 `depends_on: service_completed_successfully` 等它成功。
+#   漏列时 compose 不会为显式指定的服务自动补齐依赖 → backend 会在
+#   未迁移的库上启动（此时靠 create_all 兜底，等于又回到迁移被架空的旧状态）。
+# =========================================================
+services:
+  backend:
+    ports:
+      # 8000 已被音乐平台占用 → FLOW 错开到 8001
+      - "127.0.0.1:8001:8000"
+  ui:
+    ports:
+      # ⚠ 用 8502 而非 8501：FLOW 自带 caddy 发布的是 `8501:8501`
+      # （渲染实测：compose config 中 caddy 段有 target 8501 / published 8501）。
+      # 若本覆盖也占 8501，则一旦有人不列服务名直接 `up -d`，
+      # 就会出现 "port is already allocated" 冲突。
+      # 宿主侧错开到 8502 → 即使 caddy 被误启动也不会撞端口（443 冲突是外部既有的）。
+      - "127.0.0.1:8502:8501"

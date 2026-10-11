@@ -1,0 +1,77 @@
+# =========================================================
+# FLOW 실서버 Caddy — anistar.studio (Let's Encrypt 자동 발급)
+# ─────────────────────────────────────────────────────────
+# 도메인: anistar.studio / www.anistar.studio → 43.128.155.138
+# TLS: Caddy 가 자동 발급·갱신(콘솔 방화벽 80/443 개방 필수).
+#
+# 라우팅(백엔드가 유일한 서비스이므로 단순화):
+#   /releases/*  → APK 등 정적 파일(/srv/releases)
+#   그 외 전부   → backend:8000
+#
+# ⚠ 검증된 Caddyfile 함정(이 파일에서 실제로 기동 실패했던 것들):
+#   1) `format json { uri ... }` — Caddy 2 JSON 인코더는 커스텀 필드 미지원
+#      → "unrecognized subdirective uri". (루트 Caddyfile 도 동일 버그)
+#   2) `transport http { idle_timeout }` — 유효하지 않은 하위 지시어
+#      → "unrecognized subdirective idle_timeout". (루트 Caddyfile 도 동일)
+#   3) `route /a /b /c \` 개행 연장 — route 는 한 줄 인자만 인식
+#      → "wrong argument count ... after '/auth/*'".
+#   4) header_up X-Forwarded-For/Proto 는 기본 동작이라 불필요(경고).
+# =========================================================
+
+{
+    # Let's Encrypt 계정 이메일(갱신 만료 통지). 필요시 변경.
+    email admin@anistar.studio
+    admin off
+    servers {
+        trusted_proxies static 127.0.0.1
+        timeouts {
+            read_body   30s
+            read_header 30s
+            write       5m
+            idle        2m
+        }
+    }
+}
+
+anistar.studio, www.anistar.studio {
+    # 액세스 로그(INFO)에는 요청 URI(=쿼리스트링의 관리자 토큰 ?a=)가 남는다.
+    # 커스텀 필드 로깅이 불가하므로 ERROR 이상만 기록해 토큰 유출을 차단.
+    log {
+        output stdout
+        level ERROR
+    }
+
+    header {
+        -Server
+        -X-Powered-By
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Cross-Origin-Opener-Policy "same-origin"
+        Content-Security-Policy "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: https:; frame-ancestors 'self'"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+
+    encode zstd gzip
+
+    # ── APK / 릴리스 정적 서빙(강제 업데이트 다운로드용) ──
+    handle_path /releases/* {
+        root * /srv/releases
+        file_server          # [2026-10-04] 목록 제거:
+        # 任何人可枚举下载全部历史 APK（含未批准版本）→ 与"仅发布我同意的版本"冲突。
+        # 精确路径下载不受影响（app-config 的 update_url 指向具体文件）。
+        # 依据: docs/BLUEPRINT-v3-生产实测与修正-2026-10-04.md Part 3.2
+    }
+
+    # ── 그 외 전부 → 백엔드 API ──
+    handle {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            transport http {
+                read_timeout    5m
+                write_timeout   5m
+            }
+        }
+    }
+}

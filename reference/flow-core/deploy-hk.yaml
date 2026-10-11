@@ -1,0 +1,54 @@
+version: "1.0.0"
+title: "FLOW HK Deploy"
+description: "Run Hong Kong co-location bootstrap/deploy with precondition checks"
+prompt: |
+  Deploy FLOW to the Hong Kong co-location.
+
+  Step 0 — preconditions (BLOCK if any fails):
+  1) .env.production exists
+  2) ADMIN_API_KEY is NOT a placeholder ('change-me')
+  3) `docker compose --env-file .env.production config` exits 0
+
+  Then run ai-music-platform/deploy/hk/flow/bootstrap.sh, then backup.sh.
+  Secret backup only when the caller supplies a passphrase through a secret manager:
+  BACKUP_SECRETS=1 BACKUP_PASSPHRASE=<from-secret-manager> ./ai-music-platform/deploy/hk/flow/backup.sh
+  NEVER paste a real key into the command line, logs, or your reply — refer to variable names only.
+  Report each step's result with file:line evidence.
+activities:
+  - "Verify .env.production preconditions"
+  - "Run co-location bootstrap"
+  - "Run secret backup (passphrase from secret manager only)"
+extensions:
+  - type: builtin
+    name: developer
+    enabled: true
+    bundled: true
+settings:
+  goose_mode: "approve"
+parameters:
+  - key: skip_backup
+    input_type: boolean
+    requirement: optional
+    default: false
+    description: "Skip the secret backup step"
+retry:
+  max_retries: 1
+  timeout_seconds: 900
+  checks:
+    - type: shell
+      command: "test -f .env.production"
+response:
+  json_schema:
+    type: object
+    properties:
+      preconditions_passed:
+        type: boolean
+      bootstrap_result:
+        type: string
+      backup_result:
+        type: string
+      rollout_ready:
+        type: boolean
+    required:
+      - preconditions_passed
+      - bootstrap_result

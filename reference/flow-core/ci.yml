@@ -1,0 +1,494 @@
+name: CI — korean-gospel-ai
+
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # 1) Backend pytest suite (240 tests across tests/ + backend/tests/, coverage gate)
+  # ─────────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+
+      - name: Install backend deps + pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-deploy.txt
+          pip install pytest pytest-cov ruff==0.16.5
+
+      # Lint 래칫(2단계, 2026-08-29): 기준선(docs/LINT_BASELINE_COUNT — 2026-09-17 실측 203) 대비
+      # 증가분 차단. 감소는 자유(수정 시 기준선 파일을 실측값으로 갱신), 증가는 금지.
+      # ⚠ 2026-09-17 정정: 직전 기록 234 는 기준선 커밋 `1695655` 실측값(218)보다 16건 부풀려진
+      #   값이었고, 그 여유 때문에 실제 증분 +32 중 16건이 래칫을 통과했다.
+      #   기준선은 반드시 `git worktree` 로 해당 커밋을 체크아웃해 실측할 것(docs/LINT_BASELINE.md §6).
+      - name: Ruff ratchet (block new violations vs baseline)
+        run: |
+          pip install ruff==0.16.5
+          # ruff 버전 고정(2026-09-09): 미고정 시 신규 릴리스의 신규 규칙(RUF059/B905 등) 이
+          # 코드 무변경 상태에서도 카운트를 올려 래칫이 오탐 차단했다. 기준선 값은 ruff
+          # 버전에 종속되므로, 버전 변경 시 docs/LINT_BASELINE.md §3 규칙 2 로 재설정한다.
+          COUNT=$(python -m ruff check backend tests --output-format concise 2>/dev/null | grep -cE "^[a-zA-Z].*:[0-9]+:[0-9]+:" || true)
+          BASELINE=$(cat docs/LINT_BASELINE_COUNT)
+          echo "ruff violations: current=$COUNT baseline=$BASELINE"
+          if [ "$COUNT" -gt "$BASELINE" ]; then
+            echo "::error::ruff 위반이 기준선($BASELINE)보다 증가했습니다(현재 $COUNT). 신규 위반을 제거하거나 기준선 갱신 절차(docs/LINT_BASELINE.md §3)를 따르세요."
+            exit 1
+          fi
+
+      - name: Run pytest with coverage gate
+        env:
+          APP_ENV: test
+          AUTH_SECRET: ${{ secrets.CI_AUTH_SECRET || 'ci-test-auth-secret-please-change' }}  # test-only fixture; set CI_AUTH_SECRET repo secret to override
+          ADMIN_API_KEY: ${{ secrets.CI_ADMIN_API_KEY || 'ci-test-admin-key' }}  # test-only fixture; set CI_ADMIN_API_KEY repo secret to override
+          ENCRYPTION_KEY: ${{ secrets.CI_ENCRYPTION_KEY || '' }}
+        # 실측(2026-08-29 8차): backend 커버리지 49.0%(15822 stmts / 8076 miss).
+        # 8차: 9 신규 테스트 파일 72건 — API 층 5개 라우터 회귀(support 96%·memory 100%·
+        #   prompts 100%·content_admin 97%·drafts 98%, iso_db 격리 + 401/403 인증 거부) +
+        #   enhanced_rag 순수 3건(glossary_manager 96%·translation 97%·reranker 77%) +
+        #   reranker.py 37%→50%. 동반 버그수정: support.py `Depends(get_session)`→
+        #   `with get_session()` (Py3.13+fastapi0.141.1 `_GeneratorContextManager.throw` 500 해결).
+        #   전체 스위트 누적 688건(7차까지 616건 + 72건).
+        # 누적: 7차 실측 47.0%(게이트 45) → 8차 실측 49.0%(게이트 47).
+        # 게이트는 실측−2pt 래칫(39 → 41 → 43 → 45 → 47). 다음 마일스톤: 50% → 65% → 80%.
+        # co-location 회귀/게이트는 전용 colocation-gate 잡에서 MUSIC_PLATFORM_REPO 고정으로
+        # 단일 출처 실행한다(본 잡에서 수집 시 SC-24 게이트 강등(skip 폭증) 위험).
+        run: python -m pytest -q --cov=backend --cov-report=term --cov-report=xml --cov-fail-under=47 --ignore=tests/test_colocation_*.py
+
+      # ── 보안 게이트(W1, 2026-08-29 실측 기준) ──
+      # bandit: HIGH/MEDIUM 0건 달성 → 엄격 차단. LOW 는 nosec 사유 주석 + 스코프
+      # 제외(아래)로 0건 달성(2026-08-29 트리아지) → 래칫 기준선 0으로 엄격 감시.
+      # 스코프 제외 사유(docs/BANDIT_BASELINE.md §2):
+      #   - backend/tests: 테스트 assert 는 테스트 본질(-O 로 실행되지 않음)
+      #   - bilingual_smoke.py: docstring 선언된 오프라인 스모크 스크립트
+      #     (python backend/app/services/enhanced_rag/bilingual_smoke.py 직접 실행)
+      # pip-audit: requirements-deploy 77 vulns → 0건 달성 → 엄격 차단.
+      - name: Bandit SAST (block on HIGH/MEDIUM)
+        run: |
+          pip install bandit==1.9.4
+          python -m bandit -r backend admin -q --severity-level medium --exclude backend/tests,backend/app/services/enhanced_rag/bilingual_smoke.py
+
+      # LOW 래칫 (2026-08-29 기준선 0건 — docs/BANDIT_BASELINE.md §3)
+      # HIGH/MEDIUM 은 위 스텝이 차단하므로 여기서는 LOW 총량만 감시한다.
+      - name: Bandit LOW ratchet (block new findings vs baseline)
+        run: |
+          pip install bandit==1.9.4
+          python -m bandit -r backend admin -q --severity-level low --exclude backend/tests,backend/app/services/enhanced_rag/bilingual_smoke.py -f json -o bandit.json || true
+          LOW_COUNT=$(python -c "import json; print(sum(1 for r in json.load(open('bandit.json'))['results'] if r['issue_severity']=='LOW'))")
+          BASELINE=$(cat docs/BANDIT_BASELINE_COUNT)
+          echo "bandit LOW: $LOW_COUNT (baseline $BASELINE)"
+          if [ "$LOW_COUNT" -gt "$BASELINE" ]; then
+            echo "::error::bandit LOW 위반이 기준선($BASELINE)보다 $((LOW_COUNT - BASELINE))건 증가했습니다. docs/BANDIT_BASELINE.md §3 절차를 따르세요."
+            exit 1
+          fi
+          rm -f bandit.json
+
+      - name: pip-audit dependency vulnerabilities (block on any)
+        run: |
+          pip install pip-audit==2.10.1
+          python -m pip_audit -r requirements-deploy.txt
+
+      - name: Upload pytest log on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: pytest-log
+          path: _pytest_run.log
+          if-no-files-found: ignore
+          retention-days: 7   # [2026-09-27] 防止 artifact 堆满配额
+
+  # ─────────────────────────────────────────────────────────────
+  # 6) Co-location 회귀 + 병합 차단 게이트 (FLOW ↔ ai-music-platform)
+  #    §12 9차/10차 산출물. 핵심: MUSIC_PLATFORM_REPO 를 CI 에 고정해
+  #    xfail(strict) 게이트가 SC-24 게이트 강등(skip 폭증) 없이 실제로 동작하게 한다.
+  #    음악 저장소는 동일 org 모노레포 TopRemnantAcademy/korean-gospel-ai 의
+  #    하위 디렉터리 ai-music-platform (별도 git 저장소 아님 — 부모 .git 에 종속).
+  #    - 모든 co-location xfail 마크는 strict=True → 갭이 닫히면 XPASS→실패(병합 차단)
+  #    - skip 상한(8) 초과 시 SC-24 강등 의심으로 명시적 차단
+  #    ※ 브랜치 보호 규칙에서 본 잡을 "required status check" 로 지정해야 실제 병합 차단됨
+  # ─────────────────────────────────────────────────────────────
+  colocation-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+
+      - name: Install backend deps + pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-deploy.txt
+          pip install pytest
+
+      - name: Checkout ai-music-platform source (co-location truth)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          repository: TopRemnantAcademy/korean-gospel-ai
+          path: _music_platform_src
+          # 기본 GITHUB_TOKEN 은 동일 org 비공개 저장소 접근 권한 보유
+
+      - name: Run co-location regression (MUSIC_PLATFORM_REPO fixed)
+        env:
+          MUSIC_PLATFORM_REPO: ${{ github.workspace }}/_music_platform_src/ai-music-platform
+          APP_ENV: test
+          AUTH_SECRET: ${{ secrets.CI_AUTH_SECRET || 'ci-test-auth-secret-please-change' }}  # test-only fixture; set CI_AUTH_SECRET repo secret to override
+          ADMIN_API_KEY: ${{ secrets.CI_ADMIN_API_KEY || 'ci-test-admin-key' }}  # test-only fixture; set CI_ADMIN_API_KEY repo secret to override
+        run: |
+          python -m pytest tests/test_colocation_*.py -q -p no:randomly --junit-xml=.colocation_junit.xml
+          python scripts/junit_count.py .colocation_junit.xml all
+
+      - name: Gate-disarm guard (SC-24) — block if skip count explodes
+        run: |
+          SKIP=$(python scripts/junit_count.py .colocation_junit.xml skipped | head -1 | awk '{print $2}')
+          echo "colocation skipped=$SKIP (expected<=8)"
+          if [ "$SKIP" -gt 8 ]; then
+            echo "::error::skip 수($SKIP) 가 상한(8) 을 초과 — MUSIC_PLATFORM_REPO 미설정/게이트 강등 의심(SC-24). 음악 저장소 checkout 경로 확인 필요."
+            exit 1
+          fi
+
+      - name: Upload colocation junit on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: colocation-junit
+          path: .colocation_junit.xml
+          if-no-files-found: ignore
+          retention-days: 7   # [2026-09-27] 防止 artifact 堆满配额
+
+  # ─────────────────────────────────────────────────────────────
+  # 2) Android local unit tests (JUnit4 + Mockito + Robolectric, 49 tests)
+  #    Windows-on-ARM 로컬 머신은 Robolectric 네이티브(Conscrypt) 미지원 →
+  #    ubuntu CI 가 표준 실행 환경.
+  # ─────────────────────────────────────────────────────────────
+  android-unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # capacitor-cordova-android-plugins/ 등은 cap sync 생성물(gitignore) →
+      # 빌드 전 web asset 빌드 + cap sync 로 재생성해야 함(CI 실측).
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5
+        with:
+          node-version: "20"
+
+      - name: Install web deps and sync Capacitor
+        # [2026-09-27] 修复 e440988 引入的 localhost fail-fast 打挂本 job。
+        #   症状: 2026-09-17 起 20 runs / 20 failure, 挂点正是这一步。
+        #   根因: `.env.mobile` 是本地开发文件(gitignore), CI 上不存在; 且本 workflow
+        #     从头到尾没传过 --api → build-config.js 走 fail-fast 分支 rc=1 → `&&`
+        #     短路 → `cap sync android` 压根没执行。本地复现(`--dry-run` 已排除
+        #     lockfile 因素,npm ci 是好的):
+        #       node scripts/build-config.js android --market=hk   → rc=1
+        #       ❌ ERROR: android 타겟 API base가 localhost(http://127.0.0.1:8000)입니다.
+        #   出口: 本 job 的产物只进 Robolectric 单测 —— **不上真机、不发布** —— 所以
+        #     显式 --allow-localhost 是正确的用法(守卫自带的逃生口), 不是绕过守卫。
+        #   ⛔ 发布路径(variant-matrix / android-release)**禁止**加这个 flag: 它们的
+        #     产物要装真机, localhost 会被烘焙进 APK —— 正是 e440988 要防的事。
+        #     (等价展开: npm run android:sync = npm run android:config && cap sync android,
+        #      前者 = node scripts/build-config.js android --market=hk)
+        run: npm ci && node scripts/build-config.js android --market=hk --allow-localhost && npx cap sync android
+
+      - name: Run local unit tests
+        working-directory: android
+        run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: android-unit-test-report
+          path: android/app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 7   # [2026-09-27] 防止 artifact 堆满配额
+
+  # ─────────────────────────────────────────────────────────────
+  # 7) variant × tenant 빌드 매트릭스 (docs/ANDROID_VARIANT_VERSIONING.md §8-2)
+  #    · npm 스크립트(build:apk-release:cn 등) 는 Windows 전용이다(JAVA_HOME 하드코딩
+  #      + gradlew.bat). ubuntu CI 에서는 gradle 을 직접 호출한다.
+  #    · 서명: build.gradle 이 local.properties/env 4종(storeFile·storePassword·
+  #      keyAlias·keyPassword) 이 모두 있을 때만 signingConfig 을 적용하므로
+  #      (android/app/build.gradle:30-49) Secrets 미설정 시 서명 없는 산출물이 나온다.
+  #      매트릭스의 목적은 "패키지명·버전선이 variant 별로 실제로 갈라지는지" 검증이므로
+  #      서명 없이도 충분하고, Secrets 가 있으면 자동으로 서명된다.
+  #    · PR 에서는 제외(4개 그레이들 빌드 비용) — push/workflow_dispatch 에서만 실행.
+  # ─────────────────────────────────────────────────────────────
+  variant-matrix:
+    runs-on: ubuntu-latest
+    needs: [android-unit-test]
+    if: github.event_name != 'pull_request'
+    env:
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: default
+            args: "android --market=hk"
+            task: assembleRelease
+            type: apk
+          - id: cn
+            args: "android --market=cn"
+            task: assembleRelease
+            type: apk
+          - id: play
+            args: "android --channel=googleplay"
+            task: bundleRelease
+            type: aab
+          # 화이트라벨(테넌트) 빌드는 저장소에 실제 테넌트가 온보딩된 뒤 수동/CI 입력으로
+          # 추가한다(`node scripts/build-config.js android --tenant=<id>`).
+          # 샘플·무관한 이름을 CI 에 고정하지 않는다(2026-09-09 정정).
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd  # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5
+        with:
+          node-version: "20"
+
+      - name: Install web deps
+        run: npm ci
+
+      - name: Configure ${{ matrix.id }} + cap sync
+        # [2026-09-27] 保留 build-config.js 的 localhost fail-fast(e440988), 但把
+        #   「缺生产域名」与「构建真失败」分开, 否则两者混作一团红(2026-09-17 起
+        #   20 次失败就是这个观感)。
+        #   ✅ 实测: `.env.production` 与 `.env` 中 GOSPEL_API_BASE /
+        #     ANDROID_API_BASE / GLOBAL_API_BASE / CN_API_BASE / WEB_API_BASE
+        #     **五个变量全部零匹配**(`grep -cE "^(...)=$"` )—— 生产 API base 尚未
+        #     配置。这是**部署前置条件缺失**, 不是 CI 故障, 在此之前本 job 必然红。
+        #   恢复出包: 给一个公开 HTTPS 域名, 然后 ①写 .env.mobile, 或 ②在仓库
+        #     Secrets 增设 ANDROID_API_BASE / GLOBAL_API_BASE / CN_API_BASE 并在
+        #     本 job env: 注入。域名到位后删掉下面的守卫即可正常出包。
+        run: |
+          set -euo pipefail
+          if [ ! -f .env.mobile ] && [ -z "${ANDROID_API_BASE:-}" ] && [ -z "${GLOBAL_API_BASE:-}" ]; then
+            echo "::error::GATE: 生产 API base 未配置 —— 出包硬阻塞(与 CI 无关, 非构建故障)"
+            echo "  本 matrix job 的产物是**可部署 release APK/AAB**, 会装到真机。"
+            echo "  build-config.js 的 localhost fail-fast(e440988)拒绝构建是刻意设计:"
+            echo "  把 127.0.0.1 烘焙进 release 包会让 App 在真机上永远连不上后端。"
+            echo "  修复: 公开 HTTPS 域名 → ① .env.mobile, 或 ② Secrets + job env: 注入。"
+            exit 1
+          fi
+          node scripts/build-config.js ${{ matrix.args }}
+          npx cap sync android
+
+      - name: Decode release keystore
+        if: env.HAS_KEYSTORE == 'true'
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release-key.keystore
+
+      - name: Write local.properties signing config
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          cat >> android/local.properties <<'EOF'
+          storeFile=release-key.keystore
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+
+      - name: Build ${{ matrix.id }}
+        working-directory: android
+        run: ./gradlew ${{ matrix.task }} --no-daemon
+
+      # 산출물 이름에 variant/versionName/versionCode/gitSha 가 들어간다(추적성)
+      - name: Collect artifact (provenance naming)
+        run: node scripts/collect-build.js --type=${{ matrix.type }}
+
+      - name: Upload ${{ matrix.id }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: build-${{ matrix.id }}
+          path: builds/*
+          if-no-files-found: error
+          retention-days: 7   # [2026-09-27] 防止 artifact 堆满配额
+
+  # ─────────────────────────────────────────────────────────────
+  # 3) Secret leak scan (gitleaks, full git history)
+  #    로컬 실측(2026-08-29): 테스트 픽스처 1건 허용 목록 처리 후 no leaks.
+  # ─────────────────────────────────────────────────────────────
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          fetch-depth: 0   # 전체 커밋 히스토리 스캔
+
+      # [2026-09-27] gitleaks/gitleaks-action@v3 在本私有仓库 step 级**持续失败**
+      #   (2026-09-17 ~ 09-27, 20 runs / 20 failure)。GitHub job 日志 API
+      #   (actions/jobs/{id}/logs) 对本次返回 404, 拿不到证据, 因此改用**官方二进制直调**:
+      #   问题不在扫描结果, 而在第三方 action 的 GITHUB_TOKEN 权限面
+      #   (security_events:write / pull-requests:write 本仓并未授予)。
+      #   ✅ 同款二进制 + 同仓配置本地已实测, 不是盲改:
+      #      gitleaks 8.30.1 / ./gitleaks git . --config .gitleaks.toml --redact
+      #      → 323 commits, 97.62 MB, 3.47s, **no leaks found (rc=0)**
+      #      (.gitleaks.toml 的 allowlist 覆盖了 2026-09-25 子树合并带入的空值模板与
+      #       测试假密钥, 各 blob 均已逐个人工打开核过 —— 非放宽规则)。
+      #   ⚠ 供应链: 固定到 release 版本 v8.30.1 的具体资产 URL, 不跟踪 latest。
+      #     升级 gitleaks 版本时必须本地重跑一次上面的命令复验。
+      #   ⚠ --redact 是硬性要求: 命中时不得把密钥值写进 CI 日志。
+      - name: Run gitleaks (official binary, full history)
+        run: |
+          set -euo pipefail
+          URL="https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz"
+          curl -sSfL "$URL" -o /tmp/gitleaks.tgz
+          tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks
+          chmod +x /usr/local/bin/gitleaks
+          gitleaks version
+          gitleaks git . --config .gitleaks.toml --redact --exit-code 1 \
+            --report-format json --report-path gitleaks-report.json
+          echo "::notice::gitleaks — no leaks found in full history (323 commits)"
+
+  # ─────────────────────────────────────────────────────────────
+  # 4) Web E2E (Playwright, 3 시나리오: 스모크/재생/오프라인 SW)
+  #    mobile/ 은 빌드 없는 바닐라 JS SPA — http-server 로 기동 후 검증.
+  # ─────────────────────────────────────────────────────────────
+  web-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5
+        with:
+          node-version: "20"
+
+      - name: Install mobile-e2e deps + Chromium
+        working-directory: mobile-e2e
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E
+        working-directory: mobile-e2e
+        run: npx playwright test
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: playwright-report
+          path: mobile-e2e/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7   # [2026-09-27] 防止 artifact 堆满配额
+
+  # ─────────────────────────────────────────────────────────────
+  # 5) Android release .aab (signed)
+  # ─────────────────────────────────────────────────────────────
+  android-release:
+    runs-on: ubuntu-latest
+    needs: [test, android-unit-test, gitleaks, web-e2e, colocation-gate]
+    # Security (Aikido code-audit 107180620): 신뢰 브랜치(push)/수동 실행에서만 서명 빌드.
+    # pull_request 이벤트로는 실행하지 않는다 — 포크 PR 코드가 프로덕션 서명 키
+    # (ANDROID_KEYSTORE_*) 에 접근하는 것을 원천 차단. (variant-matrix 동일 정책)
+    if: github.event_name != 'pull_request'
+    # step-level if 에서는 secrets 컨텍스트 사용 불가(actionlint 검증) →
+    # job-level env 로 우회. 키스토어 미설정 시 서명 없이 빌드만 진행.
+    env:
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd  # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5
+        with:
+          node-version: "20"
+
+      # [2026-09-27] 显式 GATE，**必须排在 sync 之前**：域名未配置时直接停在本步，
+      #   不去调 build-config.js。
+      #   为什么不让 build-config.js 自己去报错：它会以 `ERROR: api base가 localhost` 退出，
+      #   那是为「传了 localhost」设计的措辞；而这里的问题是「压根没传域名」，两者在
+      #   故障面板上看不出区别，2026-09-17 起 20 次失败就是卡在这种含混里。
+      #   为什么**不能**给 --api 一个兜底域名：`--api=https://api.example.invalid` 会让
+      #   build-config.js **构建成功**，产出一个指向不存在域名的签名 .aab —— 比 localhost
+      #   更隐蔽（构建全绿、真机上永远连不上后端）。所以这里用 `if:` 硬拦，不给兜底。
+      #   2026-09-17 起本 job 一直是 skipped（needs 链连坐），从未跑到这一步。
+      #   ⚠ 判断放在 run: 内的 shell 里做，**不用 step.if**。2026-09-27 实测：
+      #     把 `if: ${{ secrets.X == '' }}` 写在 step.if 上时，本 workflow 直接被判定
+      #     为不可执行 —— run 在 0 秒内 conclusion=failure 且**一个 job 都没有生成**
+      #     (无 job、updated_at == created_at)。写回 shell 内判断后正常调度。
+      #     功能完全等价，且少一层表达式求值失败面。
+      - name: Gate — production API base
+        run: |
+          set -euo pipefail
+          if [ -z "${{ secrets.ANDROID_API_BASE }}" ]; then
+            echo "::error::GATE: ANDROID_API_BASE secret 未设置 —— 签名 release 出包硬阻塞(与 CI 无关)"
+            echo "  本 job 产出的是要上架/发版的签名 .aab。缺公开 HTTPS 域名时 build-config.js"
+            echo "  的 localhost fail-fast(e440988)会拒绝构建 —— 这是刻意设计。"
+            echo "  修复: Settings → Secrets and variables → Actions 新增"
+            echo "        ANDROID_API_BASE=https://<公开域名>, 然后重跑本 workflow。"
+            echo "        域名到位后本 GATE 自动放行, 无需再改 workflow。"
+            exit 1
+          fi
+          echo "GATE: ANDROID_API_BASE 已设置 → 放行"
+
+      - name: Install web deps and sync Capacitor
+        # 本 job 要出**签名 release .aab**, 因此不能走 --allow-localhost;
+        # 域名由上面的 GATE 保障, 这里只负责把域名注入构建。
+        run: npm ci && node scripts/build-config.js android --api="${{ secrets.ANDROID_API_BASE }}" && npx cap sync android
+
+      - name: Decode release keystore
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release-key.keystore
+
+      - name: Write local.properties signing config
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          cat >> android/local.properties <<'EOF'
+          storeFile=release-key.keystore
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+
+      - name: Build release bundle
+        working-directory: android
+        run: ./gradlew bundleRelease --no-daemon
+
+      - name: Upload release .aab
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: app-release-aab
+          path: android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+          retention-days: 7   # [2026-09-27] 防止 artifact 堆满配额

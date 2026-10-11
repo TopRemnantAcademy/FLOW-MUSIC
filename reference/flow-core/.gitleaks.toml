@@ -1,0 +1,31 @@
+# gitleaks configuration — https://github.com/gitleaks/gitleaks
+title = "FLOW gitleaks config"
+
+[extend]
+# useDefault extends the built-in ruleset
+useDefault = true
+
+[allowlist]
+# 1) tests/test_config.py — 예전부터 허용된 스크럽 로직 테스트용 가짜 시크릿 픽스처
+# 2) ai-music-platform 서브트리 병합(2026-09-25) 시 신규 유입:
+#    - backend/.env.example : 템플릿 파일, 값이 비어 있음(SUNO_API_KEY= / SUNO_PASSWORD=) → 오탐
+#    - deploy/hk/selftest.sh: 실측 확인된 테스트용 가짜 키(sk-normal / sk-plainkey123 /
+#      sk-rotated-999 / <PASTE_YOUR_MUREKA_API_KEY>) → 오탐
+# 3) 위 두 항목은 **HEAD에서는 이미 삭제되었으나 git 히스토리에 잔존**하는 파일이다.
+#    2026-09-25 CNB 푸시 전 전체 히스토리 스캔(213 commits)에서 위 2건이 검출되었고,
+#   各自的 blob 均已直接打开核实为「空值模板 / 测试假数据」。
+#    ★ 실제 키가 여기에 추가되어서는 안 된다. 반드시 값이 비어 있거나 테스트 더미일 때만 추가.
+description = "Templates with empty values + test fixtures with intentionally fake secrets"
+paths = [
+  '''tests/test_config\.py''',
+  '''backend/\.env\.example''',
+  '''deploy/hk/selftest\.sh''',
+  '''ai-music-platform/backend/\.env\.example''',
+  '''ai-music-platform/deploy/hk/selftest\.sh''',
+  # 4) ai-music-platform/vendor/ — 2026-09-25 부터入库된 third_party 协议参考
+  #    (CNB chguanw/ace-step-1.5, MIT). upstream 문서의 예시 placeholder
+  #    (예: `-H 'Authorization: Bearer your-api-key'`, rule curl-auth-header) 가
+  #    걸린다. 우리 코드가 아니라 우리가 관리하는 표면도 아니므로 필터링한다.
+  #    ★ 여기에는 실제 키가 절대 들어가면 안 된다.
+  '''ai-music-platform/vendor/''',
+]

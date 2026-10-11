@@ -1,0 +1,515 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CNB 云原生构建 — FLOW 门禁流水线
+#
+# 格式依据(已逐条核对官方文档, 非凭记忆):
+#   https://docs.cnb.cool/zh/build/configuration.html
+#   https://docs.cnb.cool/zh/build/grammar.html
+# 层级: 分支(master) → 事件(push/pull_request) → pipeline → stage → job
+#   · stage 串行执行
+#   · 同一 stage 内 jobs 用【数组】= 串行(写成对象则是并行)
+#   · pipeline 级 docker.image = 该 pipeline 所有任务共用同一镜像环境
+#   · stages/jobs 共享流水线工作目录
+#
+# 实际执行的命令全在 scripts/ci/*.sh 里, 每个都能在本机单独跑:
+#   bash scripts/ci/gates.sh          # 快速门禁(不含 pytest)
+#   bash scripts/ci/ruff-ratchet.sh   # 只看 lint 棘轮
+# ─────────────────────────────────────────────────────────────────────────────
+master:
+  push:
+    - name: flow-python-gates
+      # [2026-09-27] 8核 → 2核。核时 = 节点核数 × 墙钟小时（官方计费单位定义），
+      # 本流水线几乎全是单线程 / 网络等待（pip 下载、ruff、bandit、pytest -q 无 xdist），
+      # 8 核多数时间在空转却照样按 8 核计费。实测 metricCoreHours ÷ metricDuration 恒为 8.0
+      # （例 cnb-ic4：1.03 核时 / 462 秒 = 8.03 核），说明计费口径是「分配核数 × 墙钟」
+      # 而非真实利用率 —— 降核数与省核时因此是线性关系。
+      # 内存：官方文档只写了 runner.tags / runner.cpus 两个键，没写 memory。
+      # 实测标签一直是 `cpus=8,memory=16`（2 倍关系），推断 2 核会得到 4G——**未验证**。
+      # 若某个 stage 真出现 OOM，把 cpus 调回 4 即可，不要删掉本段。
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      docker:
+        image: python:3.13-slim
+        volumes:
+          - /root/.cache/pip
+      stages:
+        - name: install-deps
+          jobs:
+            - name: pip
+              script: |
+                # python:3.13-slim 镜像**不含 git**。
+                # scan-secrets 阶段靠 scripts/audit-sensitive.py:119 `git ls-tree -r` 与
+                # :147 `git cat-file --batch` 枚举 blobs; 缺 git 时该 stage 直接
+                # FileNotFoundError 而整条流水线报错(2026-09-25 实测, 耗时 0.2s 即失败)。
+                # 必须真装: 绝不能让脚本在"无 git"时静默跳过——那会把漏扫伪装成通过。
+                apt-get update -qq
+                apt-get install -y -qq --no-install-recommends git
+                rm -rf /var/lib/apt/lists/*
+                python -m pip install --upgrade pip
+                # ⚠ 依赖**一次解析完**，不要排在多条 pip install 里。
+                # 曾经这里排成三条独立命令：
+                #   pip install -r requirements-deploy.txt
+                #   pip install -r requirements-test.txt
+                #   pip install "pytest==9.1.1" "pytest-cov==..." ...
+                # 每一条都是**独立的完整解析**，每次都可能对已装包执行卸载-重装；
+                # 只要其中任意一步失败或没生效，rank_bm25 就会从环境里消失，
+                # 而失败点离根因隔了 4 个 stage —— build cnb-5cg-1k3bkmelg
+                # 就是在 test-backend 才以 ModuleNotFoundError / SPARSE_DEP_MISSING
+                # 报出来（3 条用例红），看起来像代码 bug。
+                # 合并后：pip 在**一次**调用里完成全部版本归一，不会再有多余的
+                # 卸载-重装窗口。（实测：pip 24/25/26 对两份清单里的同源重复声明
+                # `rank-bm25==0.2.2` 判定一致，不报冲突。）
+                # test 清单仍是"防漂移兜底"（见 requirements-test.txt 顶部），
+                # 只是不再单独占一次 install。详见 docs/CNB_CI.md §「test-backend 三连红」。
+                pip install -r requirements-deploy.txt -r requirements-test.txt
+                # 版本全部锁定, 与本机 venv(2026-09-25 实装)逐项一致。
+                # ruff 尤其必须锁: 不锁时新版本的新规则会在代码不改的情况下
+                # 抬高违规计数, 让棘轮误伤(.github/workflows/ci.yml:40-42 记的同一个坑)
+                pip install \
+                  "pytest==9.1.1" \
+                  "pytest-cov==7.1.0" \
+                  "coverage==7.16.0" \
+                  "ruff==0.16.5" \
+                  "bandit==1.9.4"
+
+                # 门禁前置自检（2026-09-25 加）：依赖必须真的能 import。
+                # 只信 pip install 的退出码不够——包可能被后续的解析卸掉、或 install
+                # 被静默跳过；那种情况下测试会以 ModuleNotFoundError 变红，且
+                # **看起来像代码 bug**（build cnb-5cg-1k3bkmelg 就是这样，白跑 3 分 40 秒）。
+                # 这里把「依赖没到位」与「代码有问题」在日志里彻底分开，并且非零退出
+                # 立刻终止本 stage（fail-closed）——不允许带着残缺环境往下再跑 4 个
+                # stage 才在 test-backend 报错。同一条原则见 scan-secrets 里的 git 安装。
+                python -c "import rank_bm25; print('rank_bm25 OK')" \
+                  || { echo "::error::rank_bm25 import 失败 —— 依赖没装到位，不把它带进 test-backend"; exit 1; }
+
+        - name: lint-ruff
+          jobs:
+            - name: ratchet
+              script: bash scripts/ci/ruff-ratchet.sh
+
+        - name: sast-bandit-medium
+          jobs:
+            - name: strict
+              script: bash scripts/ci/bandit-medium.sh
+
+        - name: sast-bandit-low
+          jobs:
+            - name: ratchet
+              script: bash scripts/ci/bandit-low.sh
+
+        - name: test-backend
+          jobs:
+            - name: pytest-coverage
+              script: |
+                # ── node 是**必需的**, 不是可选的 ─────────────────────────────
+                # tests/test_build_scripts_artifacts.py 用 `subprocess` 真实执行
+                # scripts/{collect-build,build-music-config}.js, 验证音乐 APK 产物名
+                # 与本体区分、构建配置写盘失败必须 fail-closed。
+                # python:3.13-slim **不含 node**(实测 shutil.which('node') → None),
+                # 该文件模块级 `pytestmark = skipif(which('node') is None)` 会让
+                # **11 条用例整片跳过**。
+                #
+                # 「skip」在 CNB 上看起来是绿的, 和"通过"无法区分 —— 这就是最坏的
+                # 失效模式: PR #89 修的两条缺陷(产物名撞名 / 静默假成功)本来就是
+                # 只在手工构建路径触发、CI 照不出来的, 装 node 前它们在 CI 上
+                # **一条都不会执行**。装了 node 才有真正的回归护栏。
+                #
+                # 为什么装在本 stage 而**不**在 install-deps: 与本文件 scan-secrets
+                # 的既有结论一致 —— stage 边界之间的环境传递 CNB 文档没有承诺
+                # (2026-09-25 核对 docs.cnb.cool/zh/build/* 全部文档, 无相关说明),
+                # 因此不依赖上游 stage, 本 stage 自装自用。
+                #
+                # 依据: https://docs.cnb.cool/zh/build/grammar.html#多阶段构建
+                apt-get update -qq
+                apt-get install -y -qq --no-install-recommends nodejs
+                rm -rf /var/lib/apt/lists/*
+                node --version
+
+                # fail-closed 自检: 装不上就**响亮失败**, 绝不退回"静默跳过 11 条"。
+                # 只信 apt 的退出码不够 —— 包可能被后续解析卸掉或装到别处;
+                # 这里把「node 不存在」在日志里彻底暴露, 与 scan-secrets 装 git
+                # 同一条原则(安装被省略时, "没扫描" 会被伪装成 "扫描通过")。
+                command -v node >/dev/null 2>&1 \
+                  || { echo "::error::node 不可用 —— Node 脚本守门用例会整片 skip, 那是假绿不是通过"; exit 1; }
+
+                bash scripts/ci/pytest.sh
+
+        # 敏感信息复检。全史扫描靠本地 pre-commit; 这里对 HEAD 树再跑一遍,
+        # 用的是仓库自带的 scripts/audit-sensitive.py(输出会脱敏, 不回显真实值)。
+        - name: scan-secrets
+          jobs:
+            - name: audit-sensitive
+              script: |
+                # scripts/audit-sensitive.py:118 list_blobs() 는 `git ls-tree` 를 subprocess 로
+                # 호출한다 → python:3.13-slim 에는 git 이 없어 FileNotFoundError 로 stage 가 죽는다.
+                #   실측: build cnb-e61-1k3blc2f0, stage-5 duration 0.22s 즉사, code 1.
+                # ※ 이 stage 는 스스로 apt 로 git 을 설치한다. stage 경계 간 환경 전달은
+                #   CNB 문서에 명시되어 있지 않다(2026-09-25 docs.cnb.cool/security/* 전 문서
+                #   확인: intro/quickstart/syntax-reference 어디에도 없음), 따라서 install-deps
+                #   에서 설치하는 것에 의존하면 전달되지 않을 수 있다 → 의존하지 않는다.
+                #   검증: 이 stage 안에 설치를 넣은 뒤 build cnb-rj5-1k3bnru7v 에서
+                #   stage-5 = 17.2s / success(수정 전 0.22s, 78배), FileNotFoundError 0건.
+                #   설치를 생략하면 "스캔하지 않음" 이 "스캔 통과" 로 위장되므로 반드시 설치.
+                apt-get update -qq
+                apt-get install -y -qq --no-install-recommends git
+                rm -rf /var/lib/apt/lists/*
+                python scripts/audit-sensitive.py
+
+    # ── 镜像构建验证：两条 Dockerfile 从未被 CI 构建过 ────────────────────
+    # 全仓此前没有任何 job 跑过 docker build，两条 Dockerfile 的「能不能装起来」
+    # 完全靠人肉：requirements 改了但装不上、COPY 了不存在的目录，都要等部署才炸。
+    # services: docker 是 **Pipeline 级** 配置（Stage 级不支持），开启 dind 后
+    # 才能在流水线里用 docker build / docker login
+    # （依据 https://docs.cnb.cool/zh/build/grammar.html#service-docker）。
+    # ── Android 构建门禁：配置层一致性（不需要 Android SDK / 证书） ──────
+    # 为什么需要它（2026-09-26）：
+    #   Android 的两条缺陷（音乐包 versionCode 升不上去、音乐 APK 产物名与本体混淆）
+    #   都只在**手工/脚本化构建路径**触发 —— CI 里从来没有一道门禁看得见它们，
+    #   因为 CNB 根本不跑 Android 构建。
+    #   补一套「真构建」门禁要 Android SDK + JDK + 签名证书，属独立立项；
+    #   但这两条缺陷真正的触发点是**构建配置层**（version.json /
+    #   capacitor.config.json / build.gradle / strings.xml），这一层是纯文本，
+    #   零依赖即可验。所以本 stage 只做静态一致性检查，不下载 SDK、不签名。
+    #
+    # 本 stage 依赖 node（脚本全部在 node 里解析）。python:3.13-slim **不含 node**，
+    # 而 stage 之间的环境传递在 CNB 文档里查不到任何说明（见上面 scan-secrets 的 git
+    # 那一段），所以必须在本 stage 内自己装 —— 不能依赖 install-deps。
+    #
+    # `docker build` 那一类「跑不起来就红」的问题在这里不存在：本脚本不需要网络下载，
+    # apt 只装一个 nodejs（Debian 自带版本即可，脚本只用 fs/path）。
+    # 反模式（禁止）：脚本在找不到 node 时静默 skip。那会把「没检查」伪装成
+    # 「检查过且通过」—— 与 scan-secrets 缺 git、bandit-low 空输出同一条原则。
+    - name: android-build-gate
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      docker:
+        image: python:3.13-slim
+      stages:
+        - name: gate
+          script: |
+            # nodejs + git 를 **이 stage 안에서** 설치한다(위 주석의 이유).
+            # 대상 파일이 없거나 node 가 없으면 스크립트가 rc=2 로 **즉시 실패**한다
+            # (rc=0 과 구분되는 값) — "검사 못 함" 을 "검사 통과" 로 뭉개지 않는다.
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends nodejs git
+            rm -rf /var/lib/apt/lists/*
+            node --version
+            # ① 실제 게이트
+            bash scripts/ci/android-build-gate.sh
+            # ② 게이트 자체의 회귀 테스트: `git archive` 로 저장소를 **격리 디렉터리**에
+            #    풀고 결함을 하나씩 주입해 **정말로 잡히는지** 확인한다.
+            #    이 단계가 없으면 "항상 초록인 가짜 검사" 와 구분할 수 없다.
+            node tools/check-android-build-gate.mjs --ref=HEAD
+
+    # ⚠ [2026-09-26] 本 pipeline 在组织 CPU 配额不足时会以 **Prepare 阶段 error**
+    #   出现（报文：Root Group's events CPU core-hours are insufficient for
+    #   pre-freezing），此时 `build` stage 是 skipped —— **门禁没跑过，不是没通过**。
+    #   那是平台配额问题（属外部服务），不是配置/代码问题，重跑或改 .cnb.yml 都无效；
+    #   唯一根治手段是提升 flow.237 根组织的「云原生构建-CPU配额」。
+    #   严禁为了让它变绿而删除本 pipeline —— 那等于把「没跑」伪装成「通过」，
+    #   与 scan-secrets 缺 git / bandit-low 空输出同一条反模式。
+    #   详见 docs/CNB_CI.md §「flow-image-build 在 Prepare 即 error」。
+    - name: flow-image-build
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      services:
+        - docker
+      docker:
+        image: alpine
+      stages:
+        - name: build
+          script: |
+            docker build -f Dockerfile -t flow-api:ci .
+            docker build -f Dockerfile.ui -t flow-ui:ci .
+
+  pull_request:
+    - name: flow-python-gates
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      docker:
+        image: python:3.13-slim
+        volumes:
+          - /root/.cache/pip
+      stages:
+        - name: install-deps
+          jobs:
+            - name: pip
+              script: |
+                # python:3.13-slim 镜像**不含 git**。
+                # scan-secrets 阶段靠 scripts/audit-sensitive.py:119 `git ls-tree -r` 与
+                # :147 `git cat-file --batch` 枚举 blobs; 缺 git 时该 stage 直接
+                # FileNotFoundError 而整条流水线报错(2026-09-25 实测, 耗时 0.2s 即失败)。
+                # 必须真装: 绝不能让脚本在"无 git"时静默跳过——那会把漏扫伪装成通过。
+                apt-get update -qq
+                apt-get install -y -qq --no-install-recommends git
+                rm -rf /var/lib/apt/lists/*
+                python -m pip install --upgrade pip
+                # 依赖一次解析完，**不要**拆成多条 install —— 每多一条就多一次
+                # 对已装包的卸载-重装窗口，出问题时又隔了 4 个 stage 才报警
+                # （build cnb-5cg-1k3bkmelg: rank_bm25 丢失, test-backend 3 条用例红）。
+                # 详见 docs/CNB_CI.md §「test-backend 三连红」。
+                pip install -r requirements-deploy.txt -r requirements-test.txt
+                pip install \
+                  "pytest==9.1.1" \
+                  "pytest-cov==7.1.0" \
+                  "coverage==7.16.0" \
+                  "ruff==0.16.5" \
+                  "bandit==1.9.4"
+
+                # 门禁前置自检（2026-09-25 加）：依赖必须真的能 import。
+                # 只信 pip install 的退出码不够——包可能被后续的解析卸掉、或 install
+                # 被静默跳过；那种情况下测试会以 ModuleNotFoundError 变红，且
+                # **看起来像代码 bug**（build cnb-5cg-1k3bkmelg 就是这样，白跑 3 分 40 秒）。
+                # 这里把「依赖没到位」与「代码有问题」在日志里彻底分开，并且非零退出
+                # 立刻终止本 stage（fail-closed）——不允许带着残缺环境往下再跑 4 个
+                # stage 才在 test-backend 报错。同一条原则见 scan-secrets 里的 git 安装。
+                python -c "import rank_bm25; print('rank_bm25 OK')" \
+                  || { echo "::error::rank_bm25 import 失败 —— 依赖没装到位，不把它带进 test-backend"; exit 1; }
+
+        - name: lint-ruff
+          jobs:
+            - name: ratchet
+              script: bash scripts/ci/ruff-ratchet.sh
+
+        - name: sast-bandit-medium
+          jobs:
+            - name: strict
+              script: bash scripts/ci/bandit-medium.sh
+
+        - name: sast-bandit-low
+          jobs:
+            - name: ratchet
+              script: bash scripts/ci/bandit-low.sh
+
+        - name: test-backend
+          jobs:
+            - name: pytest-coverage
+              script: |
+                # ── node 是**必需的**, 不是可选的 ─────────────────────────────
+                # tests/test_build_scripts_artifacts.py 用 `subprocess` 真实执行
+                # scripts/{collect-build,build-music-config}.js, 验证音乐 APK 产物名
+                # 与本体区分、构建配置写盘失败必须 fail-closed。
+                # python:3.13-slim **不含 node**(实测 shutil.which('node') → None),
+                # 该文件模块级 `pytestmark = skipif(which('node') is None)` 会让
+                # **11 条用例整片跳过**。
+                #
+                # 「skip」在 CNB 上看起来是绿的, 和"通过"无法区分 —— 这就是最坏的
+                # 失效模式: PR #89 修的两条缺陷(产物名撞名 / 静默假成功)本来就是
+                # 只在手工构建路径触发、CI 照不出来的, 装 node 前它们在 CI 上
+                # **一条都不会执行**。装了 node 才有真正的回归护栏。
+                #
+                # 为什么装在本 stage 而**不**在 install-deps: 与本文件 scan-secrets
+                # 的既有结论一致 —— stage 边界之间的环境传递 CNB 文档没有承诺
+                # (2026-09-25 核对 docs.cnb.cool/zh/build/* 全部文档, 无相关说明),
+                # 因此不依赖上游 stage, 本 stage 自装自用。
+                #
+                # 依据: https://docs.cnb.cool/zh/build/grammar.html#多阶段构建
+                apt-get update -qq
+                apt-get install -y -qq --no-install-recommends nodejs
+                rm -rf /var/lib/apt/lists/*
+                node --version
+
+                # fail-closed 自检: 装不上就**响亮失败**, 绝不退回"静默跳过 11 条"。
+                # 只信 apt 的退出码不够 —— 包可能被后续解析卸掉或装到别处;
+                # 这里把「node 不存在」在日志里彻底暴露, 与 scan-secrets 装 git
+                # 同一条原则(安装被省略时, "没扫描" 会被伪装成 "扫描通过")。
+                command -v node >/dev/null 2>&1 \
+                  || { echo "::error::node 不可用 —— Node 脚本守门用例会整片 skip, 那是假绿不是通过"; exit 1; }
+
+                bash scripts/ci/pytest.sh
+
+        - name: scan-secrets
+          jobs:
+            - name: audit-sensitive
+              script: |
+                # scripts/audit-sensitive.py:118 list_blobs() 는 `git ls-tree` 를 subprocess 로
+                # 호출한다 → python:3.13-slim 에는 git 이 없어 FileNotFoundError 로 stage 가 죽는다.
+                #   실측: build cnb-e61-1k3blc2f0, stage-5 duration 0.22s 즉사, code 1.
+                # ※ 이 stage 는 스스로 apt 로 git 을 설치한다. stage 경계 간 환경 전달은
+                #   CNB 문서에 명시되어 있지 않다(2026-09-25 docs.cnb.cool/security/* 전 문서
+                #   확인: intro/quickstart/syntax-reference 어디에도 없음), 따라서 install-deps
+                #   에서 설치하는 것에 의존하면 전달되지 않을 수 있다 → 의존하지 않는다.
+                #   검증: 이 stage 안에 설치를 넣은 뒤 build cnb-rj5-1k3bnru7v 에서
+                #   stage-5 = 17.2s / success(수정 전 0.22s, 78배), FileNotFoundError 0건.
+                #   설치를 생략하면 "스캔하지 않음" 이 "스캔 통과" 로 위장되므로 반드시 설치.
+                apt-get update -qq
+                apt-get install -y -qq --no-install-recommends git
+                rm -rf /var/lib/apt/lists/*
+                python scripts/audit-sensitive.py
+
+    # ── Android 构建门禁：配置层一致性（不需要 Android SDK / 证书） ──────
+    # 为什么需要它（2026-09-26）：
+    #   Android 的两条缺陷（音乐包 versionCode 升不上去、音乐 APK 产物名与本体混淆）
+    #   都只在**手工/脚本化构建路径**触发 —— CI 里从来没有一道门禁看得见它们，
+    #   因为 CNB 根本不跑 Android 构建。
+    #   补一套「真构建」门禁要 Android SDK + JDK + 签名证书，属独立立项；
+    #   但这两条缺陷真正的触发点是**构建配置层**（version.json /
+    #   capacitor.config.json / build.gradle / strings.xml），这一层是纯文本，
+    #   零依赖即可验。所以本 stage 只做静态一致性检查，不下载 SDK、不签名。
+    #
+    # 本 stage 依赖 node（脚本全部在 node 里解析）。python:3.13-slim **不含 node**，
+    # 而 stage 之间的环境传递在 CNB 文档里查不到任何说明（见上面 scan-secrets 的 git
+    # 那一段），所以必须在本 stage 内自己装 —— 不能依赖 install-deps。
+    #
+    # `docker build` 那一类「跑不起来就红」的问题在这里不存在：本脚本不需要网络下载，
+    # apt 只装一个 nodejs（Debian 自带版本即可，脚本只用 fs/path）。
+    # 反模式（禁止）：脚本在找不到 node 时静默 skip。那会把「没检查」伪装成
+    # 「检查过且通过」—— 与 scan-secrets 缺 git、bandit-low 空输出同一条原则。
+    - name: android-build-gate
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      docker:
+        image: python:3.13-slim
+      stages:
+        - name: gate
+          script: |
+            # nodejs + git 를 **이 stage 안에서** 설치한다(위 주석의 이유).
+            # 대상 파일이 없거나 node 가 없으면 스크립트가 rc=2 로 **즉시 실패**한다
+            # (rc=0 과 구분되는 값) — "검사 못 함" 을 "검사 통과" 로 뭉개지 않는다.
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends nodejs git
+            rm -rf /var/lib/apt/lists/*
+            node --version
+            # ① 실제 게이트
+            bash scripts/ci/android-build-gate.sh
+            # ② 게이트 자체의 회귀 테스트: `git archive` 로 저장소를 **격리 디렉터리**에
+            #    풀고 결함을 하나씩 주입해 **정말로 잡히는지** 확인한다.
+            #    이 단계가 없으면 "항상 초록인 가짜 검사" 와 구분할 수 없다.
+            node tools/check-android-build-gate.mjs --ref=HEAD
+
+    # ⚠ [2026-09-26] 本 pipeline 在组织 CPU 配额不足时会以 **Prepare 阶段 error**
+    #   出现（报文：Root Group's events CPU core-hours are insufficient for
+    #   pre-freezing），此时 `build` stage 是 skipped —— **门禁没跑过，不是没通过**。
+    #   那是平台配额问题（属外部服务），不是配置/代码问题，重跑或改 .cnb.yml 都无效；
+    #   唯一根治手段是提升 flow.237 根组织的「云原生构建-CPU配额」。
+    #   严禁为了让它变绿而删除本 pipeline —— 那等于把「没跑」伪装成「通过」，
+    #   与 scan-secrets 缺 git / bandit-low 空输出同一条反模式。
+    #   详见 docs/CNB_CI.md §「flow-image-build 在 Prepare 即 error」。
+    - name: flow-image-build
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      services:
+        - docker
+      docker:
+        image: alpine
+      stages:
+        - name: build
+          script: |
+            docker build -f Dockerfile -t flow-api:ci .
+            docker build -f Dockerfile.ui -t flow-ui:ci .
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 定时任务：每天 01:00 (Asia/Shanghai) 自动唤醒 NPC 自主干活
+  #
+  # 语法依据（已逐条核对官方文档，非凭记忆）：
+  #   https://docs.cnb.cool/zh/build/crontab.md
+  #     · 定时任务键名形如 `"crontab: <POSIX cron>"`，前缀 `crontab:` 不可省
+  #     · 分支键必须是【明确的单一分支名】，不支持 glob → 写 master
+  #     · cron 走系统时区 Asia/Shanghai，最小调度间隔 5 分钟（0 1 * * * 合法）
+  #     · 执行身份 = 最后修改本 crontab 配置并推送的用户
+  #   https://docs.cnb.cool/zh/build/internal-steps/npc/go.md
+  #     · crontab 属「API 触发」语义：npc:go 的 userPrompt **必填**，
+  #       systemPrompt 可选（不传则用平台内置提示词），role 仅作人格段拼接
+  #     · 评论触发才会自动注入 .cnb/settings.yml 的角色提示词；
+  #       crontab 触发不会 → 所以下面的提示词必须自带全部约束
+  #   https://docs.cnb.cool/zh/build/npc.md
+  #     · 定时任务的 CNB_TOKEN 以触发者身份签发，访问范围默认限定本仓库
+  #
+  # 为什么挂在 master（而不是 $ 兜底）：
+  #   官方明确要求定时任务放在具体分支名下 —— 放 `$` 校验不通过。
+  #
+  # 「cnb build build-crontab-sync」是干嘛的：
+  #   那是 Open API 的 BuildCrontabSync，只在**定时任务写在 include 引用的
+  #   模板文件**里、推送主仓无法感知时才需要手动同步。
+  #   本配置直接写在 .cnb.yml 本体，push 即自动同步，无需调用该 API。
+  # ───────────────────────────────────────────────────────────────────────────
+  # [2026-09-27] 每日 → 每周一 01:00。
+  #   实测依据（CNB 官方 API）：
+  #   · 一次 NPC 巡检中位 ≈ 4.07 AI 积分 + 1.21 核时 ≈ ¥0.35，
+  #     每日一次 ≈ ¥10.6/月；降频到每周 ≈ ¥2.2/月。
+  #   · 2026-09-27 01:00 那次 crontab 唯一的运行是在 Prepare 阶段被
+  #     「Root Group's events CPU core-hours are insufficient for pre-freezing」
+  #     掐死的，`npc go` 全程 skipped，AI 积分消耗为 0 —— 说明瓶颈是核时额度，
+  #     不是 AI 积分。见 .workbuddy/memory/2026-09-27.md 第 5 节。
+  "crontab: 0 1 * * 1":
+    - name: npc-weekly-autopilot
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      docker:
+        image: cnbcool/default-npc:latest
+      stages:
+        - name: npc go
+          type: npc:go
+          options:
+            userPrompt: |
+              你是 FLOW 仓库（monorepo：FLOW 主App + FLOW CCM）的每周自主巡检官，
+              由每周一 01:00 的定时任务唤醒。请自主盘点并推进「依赖升级 / 新功能 /
+              工程质量」，然后把结论落到 Issue #11。
+              角色边界与铁律见仓库根 .cnb/settings.yml 与 docs/NPC_GUIDE.md。
+
+              【费用预算·硬约束（2026-09-27 新增）】
+              本次运行按 CNB 计费：AI 积分 ≈ ¥0.05/credit，构建核时 ≈ ¥0.125/核时。
+              实测历史值单次 1.1~10.1 credit、0.28~5.98 核时，其中 97% 以上的
+              prompt 是缓存 token —— 也就是说**多出来的钱几乎全花在"工具调用轮次"上**，
+              不是花在提示词字数上。所以：
+              - 工具调用总次数上限 20 次，超过就停止探索，用已有信息下结论；
+              - 单次总时长控制在 12 分钟以内，到点必须收尾；
+              - 只读范围限定在 scripts/ 与 docs/ 两个目录，不要 git log / grep 全仓；
+              - 不要为了"更全面"而重复读同一个文件。
+              收不了尾时如实写「本次因预算上限只完成 X 项」，不要为了凑满而绕圈。
+
+              第一步先自证环境（避免幻觉）：
+              - 确认当前仓库与分支：`git remote -v`、`git rev-parse --abbrev-ref HEAD`；
+              - 确认可用脚本：`ls scripts/deps_report.py scripts/ci/`。
+                若 deps_report.py 不存在，如实写「脚本缺失，跳过依赖巡检」，
+                不要编造巡检结果。
+
+              任务：
+              0) 【开 PR 前必做·去重】先跑下面两条，确认没有覆盖同一文件的在途工作：
+                 cnb pulls list-pulls  --repo flow.237/FLOW --state open
+                 cnb issues list-issues --repo flow.237/FLOW --state open
+                 若已存在覆盖同一文件的 PR/Issue：改为在其上追加提交或评论，
+                 禁止新开 PR。两条命令的实测输出要写进 Issue #11 评论首行。
+              1) 依赖巡检：`python scripts/deps_report.py`，列出「有 CVE」与
+                 「可安全升级」两类，跨大版本的单独标注「须人工评审」。
+              2) 从「可安全升级」里挑 1~3 项证据充分、风险可控的，说明为什么现在做、
+                 怎么验证（必须本地实跑过再下结论）。
+              3) 给出 1~2 条新功能或工程质量建议，必须指到具体 file:line，
+                 不要泛泛而谈。
+
+              铁律（务必遵守）：
+              - 禁止幻觉。任何结论都必须有证据：file:line、命令实测输出、
+                或 API 返回。查不到的写「未验证」，绝不用「应该/大概」蒙过去。
+              - 默认只做只读产出：把结论用 comment 工具发到 Issue #11，
+                开头 @cnb.d8yGnbpCAGA(朴素)。
+              - 只有同时满足以下三点才允许建分支开 PR：
+                a) 改动 ≤ 3 个文件且不动业务逻辑；
+                b) 有可复现的实测证据（本地跑过门禁脚本或命令）；
+                c) PR 描述能写清「为什么现在改」与「怎么验证」。
+              - 严禁改动：Android namespace、TABS 定义、Alembic baseline、
+                分区边界 import（docs/ARCHITECTURE_BOUNDARIES.md §4.1）。
+              - 严禁输出任何真实密钥内容，只引用环境变量名。
+              - 去重只写在铁律里没用（2026-09-27 实测：同一处修复被 4 个 NPC 各自
+                开 PR 重复实现，4.1.3 甚至回退成 4.0.1）。必须按上面「任务 0)」的
+                命令实跑，并把输出贴进评论。
+              - 【改版本前必做·现状核对】2026-10-05 实测教训：3 个 NPC PR 全部报废，
+                根因都是「照抄告警文本改版本，没先看仓库现状」——
+                  · PR #128 声称「升级 baseline-browser-mapping 至 2.11.0」，
+                    实际是把它从 2.11.26 **降级**回 2.11.0（master 早已高于修复版）；
+                  · PR #127 的 diff 为空，ajv 修复已由 PR #162 合入，属重复实现；
+                  · PR #130 声称修 DoS，但实测目标版本与修复版对负数 size 行为
+                    **逐项一致**（都返回 ""），CVE 在当前版本上不可触发。
+                因此凡涉及「升级某个依赖」的 PR，描述里必须含下面三行的实测输出，
+                缺任一行即视为未验证、不予合并：
+                  a) `git show cnb/master:<该依赖清单或 lockfile>` 里该包的**当前**版本；
+                  b) 上游 registry 的 dist-tags.latest 与该包全部版本列表；
+                  c) 三者比较结论：新版本是否**严格高于**当前版本？
+                     若当前版本已 ≥ 告警指定的修复版 → 结论写「无需动作」并**不开 PR**。
+                另：告警写「未找到严格高于当前版本的可安全推荐版本」时，
+                **禁止**改版本，按 Issue 原文要求回「需人工确认」。
