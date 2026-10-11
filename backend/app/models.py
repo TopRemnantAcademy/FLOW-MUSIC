@@ -93,6 +93,11 @@ class Song(Base):
     # 不落库则 generate 路径拿不到（easy/instrumental 是一次性参数，不入此列）。
     vocal_id = Column(String(64), nullable=True)
     clip_seconds = Column(Integer, nullable=True)  # extend 续写起点（秒，对标 Suno continueAt）
+    # extend 衔接方向：tail(从尾部续) | head(从头部续)。
+    # 落库原因同 vocal_id：后台任务 `_process_song` 是从 DB 的 Song 重建 GenerateRequest，
+    # 不落库则 extend_type 永远重建为 None → 供应商侧一律按 tail 处理，
+    # "从头部衔接" 在 API/UI 上都变成静默丢弃的假功能（Mureka mureka-8 该字段必填）。
+    extend_type = Column(String(16), nullable=True)
     content_category = Column(
         String(32), nullable=True, default="general"
     )  # 内容分类：general|christian_worship|instrumental（引擎路由依据）

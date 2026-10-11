@@ -333,6 +333,7 @@
 
 ### S. 엔진 패리티 (engine parity)
 - **GAP-143 Mureka 확장메서드 — 2026-10-11 재실측: 구현됨(해소)** — extend/cover/remix/vocal-clone/stem/region-edit/instrumental/easy-generate/lyrics/generate/files-upload 전부 존재·와이어링(`mureka.py:382-680` + `songs.py` 라우터). **미구현은 `transcribe`/`describe` 2개뿐**(§F-087, §1 GAP-018 와 중복 → 본 항목이 정답).
+  - **⚠️ 2026-10-11 정정(같은 날, 후속 증분)**: 위 "전부 존재·와이어링" 결론은 **함수 존재 여부만 본 것**이었고, 그 결과 **두 개의 실결함을 놓쳤다**(전부 `test_spawn_router.py` 로 봉인, 상세 §GAP-149). 즉 "메서드 있음" ≠ "기능 있음" — 본 항목은 메서드 커버리지 한정으로만 해소이며, 배선 정합성은 GAP-149 가 정답.
 - **GAP-144 instrumental 라우팅 미정합** — `instrumental` 카테고리는 Mureka 가 prompt-only(`instrumental/generate`) 인데 우리 `GenerateReq` 는 lyric 중심 → instrumental 경로 재설계 필요(문서화 됨).
 - **GAP-145 Failover 품질격차 미계측** — 엔진 전환 시 오디오 품질/길이 차이 사용자 공지 0.
 
@@ -340,8 +341,15 @@
 - **GAP-146 개인정보 처리동의(PIPL) 없음** — 가입 시 동의 수집/기록 0(한국/중국 법적). 권고: ConsentRecord.
 - **GAP-147 민감데이터(가사) 암호화/접근로그 없음** — 가사 평문 저장(models.py:28) + 조회 로그 0.
 - **GAP-148 데이터 침해 대응(incident) 절차 없음** — 유출 시 통지/대응 runbook 0.
+- **GAP-149 Mureka 배선 정합성 결함 2건 — 2026-10-11 발견·수정(해소)** — GAP-143 의 "메서드 전부 구현" 재실측이 **함수 존재만 확인하고 링크(배선)는 검증하지 않아** 놓친 실결함. 이슈 #75 감사 중 발견, 동일 증분에서 수정·봉인.
+  - **결함 1 — `extend_type` 이 착지 시점부터 저장 불가**: Mureka `/v1/song/extend` 의 `extend_type`(tail=꼬리衔接 / head=머리衔接, `mureka-8` 필수)은 `GenerateRequest` 에만 정의되어 있었고 `SpawnReq` 에도 `Song` 컬럼에도 없었다. 그런데 백그라운드 `_process_song` 은 **DB `Song` 으로부터 재구성**하므로(`vocal_id` 와 동일 구조, 마이그레이션 `b2c3d4e5f8a1` 참조) 이 값은 항상 `None` → 공급사측은 일괄 tail 처리. **"머리衔接" 이 API·UI 어디에도 없고, 보내도 조용히 버려짐** = GAP-008/149 가 금지하는 "가짜 기능" 형태(오류보다 나쁨).
+    - 수정: `Song.extend_type` 컬럼 + 마이그레이션 `c3d4e5f6a7b8`; `SpawnReq`/`GenerateReq` 필드 추가(후자는 pydantic 이 미지 필드를 거부해 500 이 되던 실제 원인); spawn→영속→재구성 3곳 배선; 비합법값 **400 fail-closed**(조용한 tail 재작성 금지); `SongOut` 노출; 프런트 "꼬리衔接/머리衔接" 셀렉터(`Player.tsx`, 기존엔 `{}` 만 전송).
+  - **결함 2 — 기계심의가 "부모곡 폴백" 으로 우회 가능**: `_moderate_spawn(body)` 는 **요청 본문만** 검사했으나 `_spawn_from_parent` 는 body 가 비면 **부모곡의 lyric/prompt/style 로 폴백**한다. cover/remix 는 **타인의 공개곡** 대상 허용 → 부모곡이 미심의(심의가 나중에 켜졌거나 구버전 생성)면 **"공개곡을 매개로 미심의 텍스트를 엔진에 투입"** 하는 심의 우회 경로.
+    - 수정: `_moderate_spawn_text(*texts)` 로 교체 — 호출자가 **폴백 후 실효값**을 넘겨 **항목별 검증**(연결하지 않음: 각각 합법·연결 시 민감어 적중하는 거짓 음성 회피). `_resolve_spawn_values()` 로 폴백 식을 단일 출처화(빌드와 심의가 각자 재구현해 조용히 어긋나는 것을 구조적으로 차단). 부모곡 폴백 경로 전용 테스트 2건 추가.
+  - 검증: `backend/tests/test_spawn_router.py` 신규 23건(mock 주입·무네트워크); 백엔드 회귀 **417 passed**(기준 394 → +23); `alembic check` **No new upgrade operations detected**(드리프트 0); `tsc --noEmit` 0 에러; `mureka-ui-contract.test.cjs` ⑥b 절 신규 — **`extend_type` 4계층(모델/schema/라우터/프런트) 동시 존재성**을 봉인(이번 결함의 본질이 "4계층 중 3계층 누락"이라 그대로 회귀 케이스화) — PASS=66 FAIL=0(기준 51).
+  - 잔여(기존 환경성, 본 증분 무관): `test_backend_control.py::test_generate_with_unimplemented_engine_raises_clear_error`(예시로 든 `ace_step_private` 가 이미 구현됨 → 테스트가 코드 진화를 못 따라감), `test_minimax_music_client.py::test_generate_success_path_returns_result`(httpx 기본 구분자 `": "` vs 단언 `":"`), `test_postprocess.py` 2건(샌드박스에 `ffmpeg` 없음). **본 작업트리 HEAD 를 변경하기 전 clean HEAD 에서 재현 확인** — 본 증분의 회귀 아님.
 
-> **합계**: §1(40) + 본 절(108 = GAP-041~148) = **총 148개 GAP**. Tier 0~5 전범위. 모든 진술은 위 `file:line` 로 실증(환각 배제). 본 절 항목은 "과하다 싶을 정도" 를 의도 — 출시 후 품질/법률/신뢰 리스크의 조기 탐지가 목적.
+> **합계**: §1(40) + 본 절(109 = GAP-041~149) = **총 149개 GAP**. Tier 0~5 전범위. 모든 진술은 위 `file:line` 로 실증(환각 배제). 본 절 항목은 "과하다 싶을 정도" 를 의도 — 출시 후 품질/법률/신뢰 리스크의 조기 탐지가 목적.
 
 ---
 

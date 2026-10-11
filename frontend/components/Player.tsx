@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, SongView } from "@/lib/api";
+import { api, SongView, SpawnParams } from "@/lib/api";
 import { canPlayNext, canPlayPrevious, currentSong } from "@/lib/playlist";
 import {
   audioElementRef,
@@ -57,6 +57,10 @@ export default function Player({
   const [syncState, setSyncState] = useState<"idle" | "syncing" | "synced" | "failed">("idle");
   const [msg, setMsg] = useState("");
   const [spawning, setSpawning] = useState<"" | "extend" | "cover" | "remix">("");
+  // extend 衔接方向。此前 handleSpawn 固定发 `{}`，用户无从选择：
+  // 后端 SpawnReq 也没有该字段，即使传了也会被 pydantic 拒绝 → 「从头部衔接」
+  // 在 UI 上完全不存在（GAP-149 的「假功能」形态）。mureka-8 下该字段必填。
+  const [extendType, setExtendType] = useState<"tail" | "head">("tail");
   const [downloading, setDownloading] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -215,10 +219,12 @@ export default function Player({
     if (!local.id) return;
     setSpawning(task);
     setMsg("");
+    // 仅 extend 携带方向；cover/remix 带上会被后端忽略，不如不带以保持请求语义清晰。
+    const params: SpawnParams = task === "extend" ? { extend_type: extendType } : {};
     try {
       const fn =
         task === "extend" ? api.extendSong : task === "cover" ? api.coverSong : api.remixSong;
-      const { song_id } = await fn(local.id, {});
+      const { song_id } = await fn(local.id, params);
       let s: SongView | null = null;
       for (let i = 0; i < MAX_POLLS; i++) {
         if (canceledRef.current) break;
@@ -239,7 +245,14 @@ export default function Player({
         setMsg("生成超时，请稍后在我的作品查看");
       }
     } catch (e: any) {
-      setMsg(e?.message || "生成失败");
+      // 分状态码提示：此前一律「生成失败」，用户分不清「额度不足」与「引擎不支持」，
+      // 也不知道该充值还是该换歌。后端语义：400=参数/审核、401=登录、402=额度、
+      // 429=限流、501=当前引擎不支持该能力。
+      const status = e?.status;
+      if (status === 402) setMsg("额度不足或未订阅，请升级套餐后重试");
+      else if (status === 429) setMsg("操作过于频繁，请稍候再试");
+      else if (status === 501) setMsg("当前引擎不支持该能力，请换个方式创作");
+      else setMsg(e?.message || "生成失败");
     } finally {
       setSpawning("");
     }
@@ -431,6 +444,21 @@ export default function Player({
                     ? "同步中…"
                     : "同步到 FLOW 应用"}
                 </button>
+                {/* 衔接方向选择器：Mureka /song/extend 的 extend_type（mureka-8 必填）。
+                    没有它，「从头部衔接」这条能力在界面上根本不存在。 */}
+                <label className="flex items-center gap-1 text-xs text-[var(--muted)]">
+                  衔接方向
+                  <select
+                    value={extendType}
+                    onChange={(e) => setExtendType(e.target.value as "tail" | "head")}
+                    disabled={spawning !== ""}
+                    className="rounded border border-[var(--border)] bg-[var(--surface)] px-1 py-0.5 text-xs"
+                    aria-label="续写衔接方向"
+                  >
+                    <option value="tail">从尾部衔接</option>
+                    <option value="head">从头部衔接</option>
+                  </select>
+                </label>
                 <button
                   onClick={() => handleSpawn("extend")}
                   disabled={spawning !== ""}

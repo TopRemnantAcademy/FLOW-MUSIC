@@ -219,6 +219,7 @@ def _to_out(
         model_version=song.model_version or None,
         duration=song.duration,
         parent_song_id=song.parent_song_id,
+        extend_type=song.extend_type or None,
         moderation_status=song.moderation_status or "pending",
         is_public=bool(song.is_public),
         play_count=song.play_count or 0,
@@ -356,6 +357,7 @@ def _create_song(req: GenerateReq, user: User, db: Session) -> Song:
         vocal_gender=req.vocal_gender,
         vocal_id=req.vocal_id,
         clip_seconds=req.clip_seconds,
+        extend_type=_normalize_extend_type(req.extend_type),
         content_category=req.content_category or "general",
         engine_name=engine_name,
         cost_cny=cost,
@@ -536,6 +538,9 @@ async def _process_song(song_id: int):
             model_version=song.model_version or None,
             continue_song_id=continue_id,
             clip_seconds=song.clip_seconds,
+            # 从 DB 带回衔接方向，否则这里永远是 None → provider 一律 tail，
+            # 「从头部衔接」被静默丢弃（本缺陷的根因）。
+            extend_type=song.extend_type,
         )
         try:
             # P2 Failover：按内容分类构造引擎链（首要 + 其余已启用按优先级），一引擎拦截即换下一引擎
@@ -620,6 +625,51 @@ def _require_task_support(task: str, db: Session, category: str | None) -> None:
     )
 
 
+# extend 衔接方向白名单。非白名单值一律 400 fail-closed，**不静默改写为 tail**：
+# 静默改写会让用户以为「从头部衔接」生效了，实际拿到的是尾部续写 —— 正是 GAP-008/149
+# 禁止的假功能形态。白名单与 mureka.py:_create_extend 的取值保持一致。
+_EXTEND_TYPES = frozenset({"tail", "head"})
+
+
+def _normalize_extend_type(raw: str | None) -> str | None:
+    """校验并归一化 extend_type；None/空串 = 未指定（交 provider 默认 tail）。
+
+    非法值 → 400，不降级。大小写不敏感（"HEAD" 归一为 "head"）。
+    """
+    if raw is None:
+        return None
+    value = str(raw).strip().lower()
+    if not value:
+        return None
+    if value not in _EXTEND_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"extend_type 只支持 tail（从尾部衔接）或 head（从头部衔接），收到: {raw}",
+        )
+    return value
+
+
+def _load_spawn_parent(
+    song_id: int, user: User, require_owner: bool = False, *, db: Session
+) -> Song:
+    """取父歌并做血缘访问控制（extend 需本人，cover/remix 允许他人公开歌）。
+
+    抽成独立函数的原因：机审必须在**建曲之前**拿到父歌以计算回退生效值，
+    而访问控制一旦写两份就会漂移（机审用一份、落库用另一份 → 绕过口子再现）。
+    """
+    parent = db.get(Song, song_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail="源歌曲不存在")
+    if require_owner and parent.user_id != user.id:
+        # 不区分「不存在」与「非本人」，避免探测他人歌曲 id 是否存在
+        raise HTTPException(status_code=404, detail="源歌曲不存在")
+    if not require_owner and not parent.is_public and parent.user_id != user.id:
+        raise HTTPException(status_code=403, detail="仅可对公开歌曲或自己的歌曲翻唱或 Remix")
+    if parent.status != "completed":
+        raise HTTPException(status_code=400, detail="源歌曲尚未生成完成")
+    return parent
+
+
 def _spawn_from_parent(
     song_id: int,
     task: str,
@@ -628,31 +678,25 @@ def _spawn_from_parent(
     user: User,
     require_owner: bool = False,
 ) -> Song:
-    parent = db.get(Song, song_id)
-    if not parent:
-        raise HTTPException(status_code=404, detail="源歌曲不存在")
-    if require_owner and parent.user_id != user.id:
-        raise HTTPException(status_code=404, detail="源歌曲不存在")
-    if not require_owner and not parent.is_public and parent.user_id != user.id:
-        raise HTTPException(status_code=403, detail="仅可对公开歌曲或自己的歌曲翻唱或 Remix")
-    if parent.status != "completed":
-        raise HTTPException(status_code=400, detail="源歌曲尚未生成完成")
+    parent = _load_spawn_parent(song_id, user, require_owner, db=db)
     # 阶段 0 止血：task 未被链路中任何引擎真正支持 → 501，不再静默退化成「假功能」
     _require_task_support(task, db, parent.content_category)
     # Mureka /song/extend 与 /song/remix 硬性要求 lyrics（官方文档标注「Required」）；
     # 未填时回退父歌歌词（remix=换风格沿用歌词、extend=续写原词），仍为空则明确 400，
     # 而不是退化成「与父歌无关的新歌」假功能（规划 B 阶段 0 原则）。
-    lyric = body.lyric if body.lyric is not None else (parent.lyric or "")
+    lyric, prompt, style = _resolve_spawn_values(parent, body)
     if task in ("extend", "remix", "cover") and not (lyric or "").strip():
         raise HTTPException(
             status_code=400,
             detail=f"「{task}」需要歌词内容（Mureka 该能力要求歌词为必填项），请填写歌词后重试",
         )
+    # 衔接方向：仅 extend 有意义；cover/remix 传了也不该带进 payload。
+    extend_type = _normalize_extend_type(body.extend_type) if task == "extend" else None
     req = GenerateReq(
         task=task,
         source_song_id=parent.id,
-        prompt=body.prompt if body.prompt is not None else parent.prompt,
-        style=body.style if body.style is not None else parent.style,
+        prompt=prompt,
+        style=style,
         lyric=lyric,
         title=body.title or f"{parent.title} · {task}",
         make_instrumental=body.make_instrumental
@@ -660,19 +704,57 @@ def _spawn_from_parent(
         else parent.make_instrumental,
         model_version=body.model_version,
         clip_seconds=body.clip_seconds,
+        extend_type=extend_type,
         content_category=parent.content_category,
         use_flow_credit=bool(getattr(body, "use_flow_credit", False)),
     )
     return _create_song(req, user, db)
 
 
-def _moderate_spawn(body: SpawnReq) -> None:
-    """续写/翻唱机审：仅校验本次新提供的内容（沿用父歌已审内容时不拦截）。"""
+def _moderate_spawn_text(*texts: str | None) -> None:
+    """续写/翻唱机审：逐项校验**即将送进引擎的生效值**。
+
+    ⚠️ 与旧实现（`_moderate_spawn(body)`）的关键差异 —— 旧实现只看请求体，
+    而 `_spawn_from_parent` 在 body 留空时会**回退到父歌的 lyric/prompt/style**。
+    cover/remix 允许对**他人的公开歌**发起，父歌未必审过（机审可能是后来才开的、
+    或该歌是更早版本生成的）→ 「拿一首公开歌当载体，把未审文本送进引擎」的审核绕过路径。
+
+    因此改由调用方传入**回退后的生效值**（见 _effective_spawn_texts），逐个校验：
+      · 逐项而非拼接：拼接会产生假阴性（两段各自合法、拼起来命中敏感词）
+        以及假阳性（拼接引入跨字段上下文误伤）；
+      · 逐项也覆盖了「只改 prompt 沿用父歌 lyric」这类混合场景 —— 每一项都过闸。
+
+    空值跳过：未提供且父歌也没有 = 没有文本要审。
+    """
     if not settings.enable_moderation:
         return
-    text = body.lyric or body.prompt or ""
-    if text and not moderation.check_lyric(text):
-        raise HTTPException(status_code=400, detail="内容未通过审核，请修改后重试")
+    for text in texts:
+        if text and not moderation.check_lyric(text):
+            raise HTTPException(status_code=400, detail="内容未通过审核，请修改后重试")
+
+
+def _resolve_spawn_values(parent: Song, body: SpawnReq) -> tuple[str, str, str]:
+    """父歌回退的唯一实现：算出 spawn 后真正会送进引擎的 (lyric, prompt, style)。
+
+    ⚠️ 单一来源是刻意的。回退逻辑此前只写在 `_spawn_from_parent` 里，
+    机审看不到它 → 「请求体留空 + 父歌带未审文本」就能绕过机审。
+    现在建曲与机审都从这里取值，二者不可能再各写一套而悄悄漂移。
+    """
+    return (
+        body.lyric if body.lyric is not None else (parent.lyric or ""),
+        body.prompt if body.prompt is not None else (parent.prompt or ""),
+        body.style if body.style is not None else (parent.style or ""),
+    )
+
+
+def _effective_spawn_texts(task: str, parent: Song, body: SpawnReq) -> list[str]:
+    """待机审的生效文本项（按 task 只取真会进 payload 的字段）。"""
+    lyric, prompt, style = _resolve_spawn_values(parent, body)
+    if task == "extend":
+        # extend 只送 lyrics（mureka._create_extend 的 payload 无 prompt/style），
+        # 审多余的字段会拦下根本不会送进引擎的内容 —— 机审也要精确。
+        return [lyric]
+    return [lyric, prompt, style]
 
 
 @router.post("/generate", response_model=GenerateResp)
@@ -711,7 +793,10 @@ async def extend_song(
     user: User = Depends(get_current_user),
 ):
     rate_limit_generate(str(user.id))
-    _moderate_spawn(body)
+    # 机审改判「生效值」：先按父歌回退算出真正会送进引擎的文本，再逐项校验。
+    # 见 _moderate_spawn_text 文档 —— 这是封堵「父歌回退绕过机审」的关键。
+    parent = _load_spawn_parent(song_id, user, require_owner=True, db=db)
+    _moderate_spawn_text(*_effective_spawn_texts("extend", parent, body))
     song = _spawn_from_parent(song_id, "extend", body, db, user, require_owner=True)
     bg.add_task(_process_song, song.id)
     return GenerateResp(song_id=song.id, status=song.status)
@@ -726,7 +811,10 @@ async def cover_song(
     user: User = Depends(get_current_user),
 ):
     rate_limit_generate(str(user.id))
-    _moderate_spawn(body)
+    # 机审改判「生效值」：先按父歌回退算出真正会送进引擎的文本，再逐项校验。
+    # 见 _moderate_spawn_text 文档 —— 这是封堵「父歌回退绕过机审」的关键。
+    parent = _load_spawn_parent(song_id, user, require_owner=False, db=db)
+    _moderate_spawn_text(*_effective_spawn_texts("cover", parent, body))
     song = _spawn_from_parent(song_id, "cover", body, db, user, require_owner=False)
     bg.add_task(_process_song, song.id)
     return GenerateResp(song_id=song.id, status=song.status)
@@ -741,7 +829,10 @@ async def remix_song(
     user: User = Depends(get_current_user),
 ):
     rate_limit_generate(str(user.id))
-    _moderate_spawn(body)
+    # 机审改判「生效值」：先按父歌回退算出真正会送进引擎的文本，再逐项校验。
+    # 见 _moderate_spawn_text 文档 —— 这是封堵「父歌回退绕过机审」的关键。
+    parent = _load_spawn_parent(song_id, user, require_owner=False, db=db)
+    _moderate_spawn_text(*_effective_spawn_texts("remix", parent, body))
     song = _spawn_from_parent(song_id, "remix", body, db, user, require_owner=False)
     bg.add_task(_process_song, song.id)
     return GenerateResp(song_id=song.id, status=song.status)

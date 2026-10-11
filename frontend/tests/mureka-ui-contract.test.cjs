@@ -128,6 +128,61 @@ check("前端以「秒」输入并按 ×1000 提交，且本地守卫 3 秒",
   /start \* 1000/.test(read(path.join(ROOT, "frontend/app/library/page.tsx"))) &&
   /end - start < 3/.test(read(path.join(ROOT, "frontend/app/library/page.tsx"))));
 
+// ── 6b. extend_type 四层存在性（2026-10-11 缺陷修复的防漂移网）────────────
+// 本次缺陷的本质就是「四层里缺三层」：GenerateRequest 有 → Song 无列、SpawnReq 无字段、
+// 前端无从传入 → 该值在 spawn→持久化→重建 链路中被静默丢弃（一律按 tail）。
+// 单看任何一层都「正常」，所以这里把四层一起断言 —— 缺任一层，回归立即失败。
+section("⑥b extend_type 四层存在性（模型/schema/路由/前端）");
+const playerTsx = read(path.join(ROOT, "frontend/components/Player.tsx"));
+const modelsPy = read(path.join(ROOT, "backend/app/models.py"));
+const schemasPy = read(path.join(ROOT, "backend/app/schemas.py"));
+const spawnTestPy = read(path.join(ROOT, "backend/tests/test_spawn_router.py"));
+const migrationDir = path.join(ROOT, "backend/migrations/versions");
+
+// 层① 模型：Song 列
+check("模型层：Song 有 extend_type 列（否则后台从 DB 重建时必然丢失）",
+  /extend_type\s*=\s*Column\(/.test(modelsPy));
+// 层② schema：SpawnReq + GenerateReq + SongOut（缺 SpawnReq 则前端传了被 pydantic 拒）
+check("schema 层：GenerateReq 有 extend_type（provider 请求契约）",
+  /class GenerateReq[\s\S]*?extend_type:\s*Optional\[str\]/.test(schemasPy));
+check("schema 层：SpawnReq 有 extend_type（缺则前端传了必然被拒）",
+  /class SpawnReq[\s\S]*?extend_type:\s*Optional\[str\]/.test(schemasPy));
+check("schema 层：SongOut 有 extend_type（前端需回显）",
+  /class SongOut[\s\S]*?extend_type:\s*Optional\[str\]/.test(schemasPy));
+// 层③ 路由：spawn→持久化→重建 三处 + 白名单 fail-closed
+check("路由层：_create_song 持久化 extend_type",
+  /extend_type=_normalize_extend_type\(req\.extend_type\)/.test(songs));
+check("路由层：_process_song 重建请求时带回 song.extend_type（根因修复点）",
+  /extend_type=song\.extend_type/.test(songs));
+check("路由层：extend 路由透传 body.extend_type（仅 extend 生效）",
+  /extend_type\s*=\s*_normalize_extend_type\(body\.extend_type\)\s*if task == "extend"/.test(songs));
+check("路由层：非法值 400 fail-closed（不静默改写为 tail）",
+  /_EXTEND_TYPES\s*=\s*frozenset\(\{"tail",\s*"head"\}\)/.test(songs) &&
+  /status_code=400/.test(songs));
+// 层④ 前端：api 类型 + 选择器
+check("前端：api.ts 有 SpawnParams 且含 extend_type",
+  /export type SpawnParams[\s\S]*?extend_type\?:\s*"tail"\s*\|\s*"head"/.test(apiTs));
+check("前端：extendSong 使用 SpawnParams（不再是任意 Record）",
+  /extendSong:\s*\(id: number, body: SpawnParams/.test(apiTs));
+check("前端：Player.tsx 有「从尾部衔接 / 从头部衔接」选择器",
+  playerTsx.includes("从尾部衔接") && playerTsx.includes("从头部衔接"));
+check("前端：extend 请求真的带上 extend_type（而不是仍然发 {}）",
+  /task === "extend"\s*\?\s*\{\s*extend_type:\s*extendType\s*\}/.test(playerTsx));
+// 迁移存在性
+check("迁移：存在 songs.extend_type 的 alembic 迁移",
+  fs.readdirSync(migrationDir).some((f) => {
+    if (!f.endsWith(".py")) return false;
+    const body = read(path.join(migrationDir, f));
+    return /add_column\(\s*"songs"[\s\S]{0,120}extend_type/.test(body);
+  }));
+// 回归用例存在性
+check("测试：test_spawn_router.py 存在且覆盖三处链路",
+  /test_extend_type_reaches_provider_after_db_rebuild/.test(spawnTestPy) &&
+  /test_extend_type_illegal_value_400_fail_closed/.test(spawnTestPy));
+check("测试：机审父歌回退绕过路径已锁死（_moderate_spawn_text）",
+  songs.includes("_moderate_spawn_text") &&
+  /test_moderation_blocks_unmoderated_parent_via_cover/.test(spawnTestPy));
+
 // ── 7. 收藏 / 管理后台 / 上传 契约（2026-09-12 新增 UI 的防漂移网）───────────
 section("⑦ 收藏 / 管理 / 上传 契约");
 const plazaPy = read(path.join(ROOT, "backend/app/routers/plaza.py"));

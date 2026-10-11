@@ -30,6 +30,8 @@ export type SongView = {
   // 前端需 JSON.parse 后再交给 syncedLyrics.flattenSync 解析；列表/广场接口不携带此字段。
   lyrics_sync?: string | null;
   task_type?: string;
+  // extend 衔接方向：tail(从尾部衔接) | head(从头部衔接)。后端 SongOut 已下发。
+  extend_type?: string | null;
   is_public?: boolean;
   is_owner?: boolean;
   play_count?: number;
@@ -50,6 +52,23 @@ export type SongView = {
   // 发布后置：完成 + 审核通过才允许公开
   moderation_status?: string;
   moderation_note?: string | null;
+};
+
+// 对齐后端 schemas.py::SpawnReq —— extend/cover/remix 的可选覆盖参数。
+// 独立成类型而非散落 Record<string, unknown>：字段名写错时 tsc 当场报错，
+// 而不是等运行时被 pydantic 拒成 422（此前 extend_type 传了就会被拒，正是因为
+// 前端 `{}` 什么都指定不了、后端 SpawnReq 也不认这个字段）。
+export type SpawnParams = {
+  prompt?: string;
+  style?: string;
+  title?: string;
+  lyric?: string;
+  make_instrumental?: boolean;
+  model_version?: string;
+  clip_seconds?: number;
+  // 仅 extend 有意义；非 tail/head 会被后端 400 fail-closed（不静默改写）。
+  extend_type?: "tail" | "head";
+  use_flow_credit?: boolean;
 };
 
 export type AdminSongView = SongView & {
@@ -410,11 +429,11 @@ export const api = {
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },
-  extendSong: (id: number, body: Record<string, unknown> = {}) =>
+  extendSong: (id: number, body: SpawnParams = {}) =>
     request(`/api/songs/${id}/extend`, { method: "POST", body: JSON.stringify(body) }),
-  coverSong: (id: number, body: Record<string, unknown> = {}) =>
+  coverSong: (id: number, body: SpawnParams = {}) =>
     request(`/api/songs/${id}/cover`, { method: "POST", body: JSON.stringify(body) }),
-  remixSong: (id: number, body: Record<string, unknown> = {}) =>
+  remixSong: (id: number, body: SpawnParams = {}) =>
     request(`/api/songs/${id}/remix`, { method: "POST", body: JSON.stringify(body) }),
   // ── 编辑工具 ──
   // ⚠ 已移除的后期处理包装（crop / speed / aligned-lyrics / whole-song / sound）不是漏做，

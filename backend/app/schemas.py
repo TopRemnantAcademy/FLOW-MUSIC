@@ -92,6 +92,10 @@ class GenerateReq(BaseModel):
     gpt_description_prompt: Optional[str] = None
     continue_song_id: Optional[str] = None  # extend/cover/remix 外部歌曲 id
     clip_seconds: Optional[int] = None  # extend 起点（秒）
+    # Mureka /v1/song/extend 衔接方向：tail(从尾部续) | head(从头部续)。
+    # ⚠️ 必须显式声明：pydantic 默认拒绝未知字段（extra=forbid 语义下多传即 422/500）。
+    # 合法值在白名单内校验（fail-closed，见 routers/songs.py::_normalize_extend_type）。
+    extend_type: Optional[str] = None
     source_song_id: Optional[int] = None  # 站内父歌曲 id（血缘）
     persona_id: Optional[str] = None  # 已对接 open.suno.cn personaId（见 orchestrator/suno.py）
     is_public: Optional[bool] = False  # 是否公开到发现页
@@ -211,6 +215,9 @@ class SpawnReq(BaseModel):
     make_instrumental: Optional[bool] = None
     model_version: Optional[str] = None
     clip_seconds: Optional[int] = None
+    # 仅 extend 有意义：tail(从尾部衔接) | head(从头部衔接)。
+    # 此前 SpawnReq 没有该字段 → 前端传了会被 pydantic 直接拒绝，用户无从选择方向。
+    extend_type: Optional[str] = None
     use_flow_credit: bool = False  # P1 显式扣费同意（见 GenerateReq 注释）
 
 
@@ -235,6 +242,9 @@ class SongOut(BaseModel):
     task_type: str = "generate"
     duration: int = 0
     parent_song_id: Optional[int] = None
+    # extend 衔接方向：tail(从尾部衔接) | head(从头部衔接)；非 extend 为 None。
+    # 下发原因：前端选择器需回显、且用户/运维要能看出「这首是怎么续的」。
+    extend_type: Optional[str] = None
     # 逐字时间轴 JSON（仅详情接口按需返回，列表接口不暴露以控制包体）。
     # 字符串格式，结构由 mureka 提供：[{section_type,start,end,lines:[{start,end,text,words:[...]}]}]
     lyrics_sync: Optional[str] = None
