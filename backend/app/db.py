@@ -1,12 +1,43 @@
 """数据库引擎与会话（SQLAlchemy 2.x）。"""
 
 from sqlalchemy import create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import settings
 
-_is_sqlite = settings.database_url.startswith("sqlite")
-connect_args = {"check_same_thread": False} if _is_sqlite else {}
+# PG 连接建立超时（秒）。仅 postgresql 方言使用；sqlite 无此参数。
+# 取值偏短是刻意的：连不通应当快速 500，而不是让请求线程停在 TCP 握手上。
+_PG_CONNECT_TIMEOUT = 10
+
+
+def _dialect_of(url: str) -> str:
+    """数据库方言名（sqlite / postgresql / ...）。
+
+    只用 sqlalchemy.engine.make_url 解析，**不导入驱动**——所以在未安装 psycopg 的
+    机器上也能安全判断方言（驱动缺失只在真正建 engine/连接时才报错）。
+    """
+    try:
+        return make_url(url).get_backend_name()
+    except Exception:  # 非法 URL：交给 create_engine 抛原始错误，不在此处掩盖
+        return ""
+
+
+_DIALECT = _dialect_of(settings.database_url)
+_is_sqlite = _DIALECT == "sqlite"
+
+# ── connect_args 按方言条件化（PG 就绪）──────────────────────────────────────
+# check_same_thread 是 **sqlite3 DBAPI 专属**参数。给 psycopg 传它 → TypeError
+# （psycopg 的 connect() 不接受该 kwarg），表现为「换 DATABASE_URL 直接崩」。
+# 故必须先按方言分流，而不是写死一个 dict 再传给两处 engine。
+# postgres 侧显式带上 connect_timeout：PG 宕机/网络黑洞时 fail fast（默认无限期等待），
+# 与 pool_pre_ping 一起把「换库后连不上」变成快速失败而不是全站请求挂死。
+if _is_sqlite:
+    connect_args: dict = {"check_same_thread": False}
+elif _DIALECT in ("postgresql", "postgres"):
+    connect_args: dict = {"connect_timeout": _PG_CONNECT_TIMEOUT}
+else:
+    connect_args: dict = {}
 
 # 并发基线（100 人同时在线，2026-09-10 实测定型，前后对比见当日 loadtest 记录）：
 #   修复前（默认 pool 5+10、无 WAL、无 busy_timeout）100 并发注册突发 61×500
@@ -23,8 +54,49 @@ connect_args = {"check_same_thread": False} if _is_sqlite else {}
 #   · pool 50+50     → 100 并发下线程不再等连接（默认 5+10 会饿死；20+30 仍吃紧）
 # Postgres 走 else 分支：pool 参数同样适用，pre_ping 抗连接失效。
 _POOL = dict(pool_size=50, max_overflow=50, pool_timeout=30, future=True)
+
+
+def _create_engine():
+    """按方言建 engine。
+
+    ⚠ 两处 connect_args 必须走同一个「按方言算出来」的变量：sqlite 专属参数
+    （check_same_thread）绝不能出现在 postgresql 分支，否则换库即 TypeError。
+    """
+    if _is_sqlite:
+        # sqlite: 无 pool_pre_ping（单文件本地连接，ping 无意义且徒增开销）
+        return create_engine(settings.database_url, connect_args=connect_args, **_POOL)
+    # postgres（含其他方言）：pre_ping 抗连接失效（PG 重启 / 连接被中间设备回收）
+    return create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        connect_args=connect_args,
+        **_POOL,
+    )
+
+
+def _assert_driver_available() -> None:
+    """启动期驱动自检：DATABASE_URL 用 PG 而镜像未装 psycopg 时，**立刻响亮失败**。
+
+    背景（2026-10-11 服务器实测）：flow-hk-music 镜像曾只有 SQLAlchemy + alembic，
+    无任何 PG 驱动 → 切 DATABASE_URL 会在首个请求（甚至 import 期）崩，
+    而报错是 "ModuleNotFoundError: No module named 'psycopg'"，与「配置写错」
+    难以区分。宁可启动即失败并直说该怎么修。
+    """
+    if _DIALECT not in ("postgresql", "postgres"):
+        return
+    try:
+        __import__("psycopg")
+    except ImportError as e:  # pragma: no cover - 依赖齐全的正常环境不触发
+        raise RuntimeError(
+            f"DATABASE_URL 方言为 {_DIALECT}，但镜像内没有 PostgreSQL 驱动 psycopg。"
+            " 请安装：pip install 'psycopg[binary]'（见 backend/requirements.txt）。"
+        ) from e
+
+
+_assert_driver_available()
+engine = _create_engine()
+
 if _is_sqlite:
-    engine = create_engine(settings.database_url, connect_args=connect_args, **_POOL)
 
     @event.listens_for(engine, "connect")
     def _sqlite_pragma(dbapi_conn, _record):
@@ -33,10 +105,8 @@ if _is_sqlite:
         cur.execute("PRAGMA synchronous=NORMAL")  # WAL 下的推荐档（性能/耐久平衡）
         cur.execute("PRAGMA busy_timeout=5000")  # 写锁等待 5s，而非立刻 locked
         cur.close()
-else:
-    engine = create_engine(
-        settings.database_url, pool_pre_ping=True, connect_args=connect_args, **_POOL
-    )
+
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 

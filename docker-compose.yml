@@ -17,7 +17,12 @@ services:
   # │    현재 rate limit 은 인메모리.                                          │
   # │ 그런데 둘 다 `:?` 필수라 **쓰지도 않는 서비스 때문에 docker compose up 이 실패**했다. │
   # │ 기본 비밀번호를 되돌리는 건 D37 원칙 위반이므로, 서비스 자체를 비활성화하는 것이 정답. │
-  # │ → Postgres 로 전환할 때: 아래 주석 해제 + psycopg2 추가 + DATABASE_URL 변경.      │
+  # │ [2026-10-11 更新, PG 驱动就绪 Ref: #72/#74] 驱动已就位:                         │
+  # │   requirements.txt 已含 psycopg[binary]，app/db.py 的 connect_args 已按方言分流。 │
+  # │   → Postgres 전환 시 필요한 건 이제 **아래 주석 해제 + DATABASE_URL 변경 +        │
+  # │     SCHEMA_CREATE_ALL 정책 결정** 뿐이다(psycopg 추가 단계는 삭제됨).           │
+  # │   ⚠ 시간 컬럼(timestamptz) 의 naive/aware 의미가 sqlite 와 PG 에서 다르다 →     │
+  # │     切库前须先修 app/billing/service.py:_utcnow 의 时区统一(见该处注释)。        │
   # └──────────────────────────────────────────────────────────────────────┘
   # postgres:
   #   image: postgres:16-alpine
@@ -45,7 +50,11 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      # SQLite 기본(requirements 에 psycopg2 미포함 → Postgres 전환 시 드라이버 추가 필요)
+      # SQLite 기본(현행 배포 그대로 — 이 값은 바뀌지 않는다).
+      # Postgres 전환 시: 이 줄만 postgresql+psycopg://flow_music:...@flow-hk-music-postgres:5432/flow_music
+      # 로 교체. 驱动已在镜像内(psycopg[binary], 2026-10-11 PG 驱动就绪)。
+      # ⚠ 但切库前须先修時區統一, 否则 timestamptz 回读为 aware 而代码用 naive 比较
+      #   → 已有订阅者的鉴权请求全 500(实测)。
       DATABASE_URL: sqlite:////app/data/app.db
       # [2026-09-14] 스키마 생성 방식을 **명시**한다(종전엔 코드 기본값에 암묵 의존).
       #   "1" = lifespan 에서 Base.metadata.create_all 로 자동 생성（신규 SQLite 에선 이걸로 충분）

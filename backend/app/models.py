@@ -261,8 +261,13 @@ class PricingTier(Base):
     __tablename__ = "pricing_tiers"
 
     id = Column(Integer, primary_key=True, index=True)
+    # ⚠ 不要写 unique=True + index=True: 那样在 PG 上会同时落 **两条** 唯一索引
+    #   （`pricing_tiers_tier_key_key` UNIQUE CONSTRAINT + `ix_pricing_tiers_tier_key`
+    #   UNIQUE INDEX），与迁移（仅 unique=True）不一致 → `alembic check` 报漂移。
+    #   sqlite 恰好把二者折叠成一条 autoindex，所以这个漂移在 sqlite 上一直看不见。
+    #   迁移文件 c2d3e4f5a6b7 的真相是 `unique=True`，此处对齐它即消除漂移。
     tier_key = Column(
-        String(32), unique=True, nullable=False, index=True
+        String(32), unique=True, nullable=False
     )  # free|lite|standard|sacred|enterprise
     tier_name = Column(String(64), default="")
     engine_provider = Column(String(32), nullable=True)  # 该套餐默认引擎（None=按路由规则）

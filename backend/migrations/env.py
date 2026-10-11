@@ -9,13 +9,18 @@
   不污染开发库（12-factor 配置外置）。
 - 生产用 `alembic upgrade head` 演进 schema；开发兜底 create_all
   仍保留（幂等、无害，见 app/db.py）。
+- 方言：sqlite（默认）与 postgresql（`postgresql+psycopg://...`）均可直接
+  `upgrade head`。schema 本身已避开方言专属类型（全表 Integer/String/Numeric/
+  DateTime/Text，自增主键走 SQLAlchemy 的 autoincrement 语义，PG 侧落 BIGSERIAL/
+  SERIAL，sqlite 侧落 INTEGER PRIMARY KEY）—— 无需为 PG 另写一套迁移。
 """
 
 from logging.config import fileConfig
 import os
 
-from sqlalchemy import engine_from_config
+from sqlalchemy import create_engine
 from sqlalchemy import pool
+from sqlalchemy.engine import make_url
 
 from alembic import context
 
@@ -61,11 +66,34 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _migration_connect_args(db_url: str) -> dict:
+    """迁移期 connect_args —— 必须与 app/db.py 一样按方言条件化。
+
+    背景（PG 就绪，Ref: #72 / #74）：sqlite3 DBAPI 专属的 `check_same_thread`
+    一旦传给 psycopg 就是 TypeError。原实现走 engine_from_config 把 ini 段落里的
+    参数照单全收，迁移连接与 ORM 连接因此在「换 DATABASE_URL」时各行其是 →
+    迁移能跑但应用崩（或反之）。这里显式只放该方言认识的参数。
+    """
+    dialect = ""
+    try:
+        dialect = make_url(db_url).get_backend_name()
+    except Exception:  # 非法 URL 交给 create_engine 报原始错误
+        return {}
+    if dialect == "sqlite":
+        return {"check_same_thread": False}
+    if dialect in ("postgresql", "postgres"):
+        # 建表/加列可能耗时，给足握手时间避免误判成"连不上"
+        return {"connect_timeout": 10}
+    return {}
+
+
 def run_migrations_online() -> None:
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+    # ⚠ 不能再用 engine_from_config + prefix="sqlalchemy."：那样会把 ini 里
+    #   不属于本方言的参数一并传给 DBAPI。改为显式构造 URL + 方言化 connect_args。
+    connectable = create_engine(
+        db_url,
         poolclass=pool.NullPool,
+        connect_args=_migration_connect_args(db_url),
     )
 
     with connectable.connect() as connection:

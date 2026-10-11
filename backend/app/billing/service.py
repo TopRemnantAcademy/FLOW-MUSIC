@@ -42,6 +42,16 @@ class AmountMismatchError(ValueError):
 def _utcnow() -> datetime:
     # SQLite 에서는 DateTime(timezone=True) 가 naive 로 왕복되므로, 비교/저장 일관성을 위해
     # naive UTC 로 통일(func.now() 와 동일). aware 와 비교하면 TypeError 발생.
+    #
+    # ⚠ [2026-10-11 实测, PG 就绪 Ref: #72/#74] 이 "naive 통일"은 **sqlite 전용 가정**이다.
+    #   PostgreSQL 의 `timestamp with time zone` 은 UTC 로 저장하되 **연결 세션 타임존으로
+    #   回读**하므로, 읽어온 current_period_end 는 aware(예: tzinfo=Asia/Shanghai) 다.
+    #   그 상태로 아래 enforce_subscription_validity 의
+    #   `sub.current_period_end < _utcnow()` 를 비교하면
+    #   TypeError: can't compare offset-naive and offset-aware datetimes →
+    #   get_current_user 가 500 (기존 구독자 전원의 모든 인증 요청이 죽는다).
+    #   sqlite 에서는 rep 없이 naive 로 왕복돼 이 경로가 드러나지 않는다.
+    #   → PG 전환 시에는 비교 전에 tz 를 명시적으로 통일해야 한다(별도 과제).
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 

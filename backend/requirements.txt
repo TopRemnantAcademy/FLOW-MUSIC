@@ -28,6 +28,12 @@ boto3==1.35.0
 # 9.1.1 >: 与本机 venv 及 .cnb.yml(根仓库 CI)已跑通的 pytest 版本一致。
 pytest==9.1.1
 alembic==1.19.1
+# —— PostgreSQL 驱动（音乐后端独立库改造，Ref: #72 / #74）——
+# `[binary]` = 装预编译的 libpq wheel，镜像里无需 apt 装 libpq-dev/gcc
+# （python:3.11-slim 基础镜像 + 单段 pip install，构建期编译原生扩展容易失败）。
+# psycopg3 与 SQLAlchemy 2.0.35 的 "postgresql+psycopg" 方言配套；
+# 保留 sqlite 驱动（标准库内置）→ 默认 DATABASE_URL 仍是 sqlite，不破坏现有部署。
+psycopg[binary]>=3.2,<4
 
 # —— 真实支付供应商 (GAP-004 step-2 provider 子轨; 启用 stripe provider 时需安装) ——
 # lazy import: 未装也不影响 manual/离线流程与单测(单测以 sys.modules 注入假模块).
