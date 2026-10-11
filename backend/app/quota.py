@@ -30,7 +30,11 @@ def _kst_day_start_naive_utc() -> datetime:
 def daily_generated_count(db: Session, user_id: int) -> int:
     """该用户今日(KST 业务日)已创建的歌曲数（generate/extend/cover/remix 均计入）。"""
     day_start = _kst_day_start_naive_utc()
-    return db.query(Song).filter(Song.user_id == user_id, Song.created_at >= day_start).count()
+    return (
+        db.query(Song)
+        .filter(Song.user_id == user_id, Song.created_at >= day_start, Song.deleted_at.is_(None))
+        .count()
+    )
 
 
 def assert_quota(user, db: Session) -> None:

@@ -5,6 +5,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -141,6 +142,13 @@ class Song(Base):
     tier_key = Column(
         String(32), nullable=True, index=True
     )  # 生成时适用的套餐（计费归因；空=free/未订阅）
+    # ---- GAP-011 回收站：软删时间戳（NULL = 不在回收站）----
+    # 为何是软删而不是硬删：硬删（DELETE /songs/{id}）之后用户没有任何反悔路径，
+    # 而生成是有成本的（每首都在 wallet/配额上扣过）——一次误点等于把已付费的产物烧掉。
+    # 回收站只解决「找回」；「不留数据」由 30 天后清理任务负责（见 routers/library.py:purge）。
+    # ⚠ 不建数据库级默认值：默认值（如 now()）会让「刚插入的歌 = 已删除」，
+    #   而这里的 NULL 是有语义的（未删除），不能靠 server_default 兜底。
+    deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -324,3 +332,127 @@ class AuditLog(Base):
     actor_role = Column(String(16), default="none")  # super / viewer / none(无效令牌)
     client_ip = Column(String(64), default="")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GAP-011 库组织：播放列表 / 文件夹 / 回收站
+#
+# 设计取舍（结论先行，理由随各模型注释）：
+#   · 播放列表与文件夹 **分成两个模型**，不给 Playlist 加 type 字段。
+#   · 收藏**复用** SongFavorite（models.py:119），不另立 song_playlist 之外的收藏表。
+#   · 回收站只在 Song 上加 deleted_at（软删），不建 trash 表——副表要么与 songs 等宽
+#     （纯冗余），要么只存 id（删完只剩悬空指针，还要 JOIN 才能列清单）。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class Playlist(Base):
+    """用户歌单（自己排的一张表）。
+
+    与 Folder 分家（而不是在 Playlist 上开 type 字段）的理由——三处语义分叉，
+    任何一处用 type 都要在**每个使用点**加 if，那才是真正的分叉：
+
+    1. 水合：歌单要有序地展开成歌曲流（播放/排序），文件夹只是给别的实体贴归类。
+    2. 归属：一首歌可同时属于多个歌单（多对多），但只能在一个文件夹（树形分区）。
+    3. 删除：删歌单 = 解绑成员（歌还在），删文件夹 = 子项退回根（歌也还在）。
+       二者都不能级联删歌。
+
+    is_public 与 Song.is_public 同义：公开歌单可被他人浏览（歌单本身的分享）。
+    """
+
+    __tablename__ = "playlists"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    name = Column(String(255), nullable=False, default="未命名歌单")
+    description = Column(Text, default="")
+    cover_url = Column(Text, default="")  # 可为空：前端未上传时回退用首曲封面
+    is_public = Column(Boolean, default=False, server_default="false", nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PlaylistSong(Base):
+    """歌单成员 + 手动排序位。
+
+    position 是**稀疏整数**而非连续序号：一行改动（拖拽）只写一行，
+    不必为「插到第 2 位」把后面所有行整体 +1（那是 O(n) 写放大 + 并发覆盖）。
+    同歌单内 position 由应用层去重（见 routers/library.py:_normalize_positions）。
+    ⚠ 不能只靠 (playlist_id, position) 唯一约束来维持：重排过程中必然出现
+    临时重复值，唯一约束会让「拖拽」直接 500。
+    """
+
+    __tablename__ = "playlist_songs"
+    __table_args__ = (
+        # 同一首歌在同一歌单里只能出现一次（重复添加 = 幂等 no-op，不是两条记录）
+        UniqueConstraint("playlist_id", "song_id", name="uq_playlist_songs_playlist_song"),
+        Index("ix_playlist_songs_playlist_position", "playlist_id", "position"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    playlist_id = Column(
+        Integer, ForeignKey("playlists.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    song_id = Column(Integer, ForeignKey("songs.id"), index=True, nullable=False)
+    position = Column(Integer, default=0, nullable=False, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Folder(Base):
+    """文件夹（分组容器）。
+
+    为什么是「一层」而不是父子树：库组织的实际需求是「把作品分堆」，
+    树形目录带来的移动/递归删除/循环引用校验在这里没有用户价值，只增加出错面。
+    真要嵌套，后续加 parent_id 即可，当前不预留。
+
+    为什么容器与成员分两张表（而不是每行自带 name）：
+    用户心智里「文件夹」是一个可以整组改名/整组删除的东西。把 name 复制到每条
+    成员行上，改名就要 update 全部行、而「空文件夹」根本无法表达（没有行 = 不存在）。
+    成员行是 FolderItem。
+    """
+
+    __tablename__ = "folders"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_folders_user_name"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    name = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FolderItem(Base):
+    """文件夹成员：一条 = 某个实体被归入某个文件夹。
+
+    item_type 多态（song | playlist）而非两张关联表：文件夹对不同实体的操作
+    完全一致（放入 / 移出 / 删除），分表会变成两套重复端点。
+    代价是不能建数据库级外键到 item_id —— 由端点校验归属兜底（只允许放自己的东西），
+    与本项目既有取舍一致（见 UserLink.music_user_id 注释）。
+    """
+
+    __tablename__ = "folder_items"
+    __table_args__ = (
+        # 同一项在同一个文件夹里只允许一条（重复添加 = 幂等 no-op）
+        UniqueConstraint("folder_id", "item_type", "item_id", name="uq_folder_items_member"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    folder_id = Column(
+        Integer, ForeignKey("folders.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    item_type = Column(String(16), nullable=False)  # song | playlist
+    item_id = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class TrashKeepRule(Base):
+    """回收站保留策略（单行配置表）。
+
+    ⚠ 자리표시가 아니라 **설정의 거처**: 「保留 30 天」这条策略若只写死在代码常量里，
+    运维要调整（合规要求 7 天 / 付费用户 90 天）就得改代码发版。
+    这里放一行默认 30，端点读它决定过期与否（见 routers/library.py:TRASH_KEEP_DAYS）。
+    """
+
+    __tablename__ = "trash_keep_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    keep_days = Column(Integer, default=30, nullable=False, server_default="30")
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

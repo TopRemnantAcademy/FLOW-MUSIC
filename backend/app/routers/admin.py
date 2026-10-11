@@ -92,12 +92,20 @@ def _to_admin_out(song: Song, email: str | None) -> AdminSongOut:
 def list_songs(
     moderation_status: str | None = None,
     status: str | None = None,
+    include_trashed: bool = False,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
     _: None = Depends(require_admin),
 ):
+    """作品清单。默认**不含回收站**（GAP-011 软删）。
+
+    include_trashed=True 才会列出已软删的歌 —— 这个开关的存在理由是运营需要
+    「这首歌到底还在不在」的答案，而用户侧的删除不该让它在后台凭空消失。
+    """
     q = db.query(Song, User.email).join(User, User.id == Song.user_id, isouter=True)
+    if not include_trashed:
+        q = q.filter(Song.deleted_at.is_(None))
     if moderation_status:
         q = q.filter(Song.moderation_status == moderation_status)
     if status:

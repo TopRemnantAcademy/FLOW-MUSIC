@@ -57,6 +57,53 @@ export type SongView = {
   moderation_note?: string | null;
 };
 
+// ── GAP-011 库组织 ──
+// 回收站条目：SongView + 删除时刻/到期时刻/剩余天数（days_left 由后端算，前端只显示）
+export type TrashItem = SongView & {
+  deleted_at?: string | null;
+  expires_at?: string | null;
+  days_left?: number | null;
+  keep_days?: number;
+};
+
+export type PlaylistView = {
+  id: number;
+  name: string;
+  description?: string | null;
+  cover_url?: string | null; // 为空时后端已回退首曲封面
+  is_public?: boolean;
+  song_count?: number;
+  is_owner?: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+  songs?: SongView[]; // 仅详情接口返回
+};
+
+export type FolderItemView = {
+  id: number; // 成员行 id（移出用）
+  item_type: "song" | "playlist";
+  item_id: number;
+  title?: string | null;
+};
+
+export type FolderView = {
+  id: number;
+  name: string;
+  count: number;
+  items: FolderItemView[];
+};
+
+// 批量端点统一回执：能做的做掉、做不到的如实汇报（前端据此提示「N 首被跳过」）
+export type BatchResult = {
+  deleted?: number[];
+  updated?: number[];
+  added?: number[];
+  already_in?: number[];
+  playlist_id?: number;
+  count?: number;
+  skipped?: (number | { id: number; reason: string })[];
+};
+
 // 对齐后端 schemas.py::SpawnReq —— extend/cover/remix 的可选覆盖参数。
 // 独立成类型而非散落 Record<string, unknown>：字段名写错时 tsc 当场报错，
 // 而不是等运行时被 pydantic 拒成 422（此前 extend_type 传了就会被拒，正是因为
@@ -558,6 +605,71 @@ export const api = {
       body: JSON.stringify({ score }),
     }),
   myFavorites: () => request<SongView[]>("/api/plaza/favorites"),
+  // ── GAP-011 库组织：播放列表 / 文件夹 / 批量 / 回收站 ──
+  playlists: () => request<PlaylistView[]>("/api/library/playlists"),
+  createPlaylist: (name: string, opts: { description?: string; is_public?: boolean } = {}) =>
+    request<PlaylistView>("/api/library/playlists", {
+      method: "POST",
+      body: JSON.stringify({ name, ...opts }),
+    }),
+  playlist: (id: number) => request<PlaylistView>(`/api/library/playlists/${id}`),
+  updatePlaylist: (
+    id: number,
+    patch: { name?: string; description?: string; cover_url?: string; is_public?: boolean }
+  ) =>
+    request<PlaylistView>(`/api/library/playlists/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deletePlaylist: (id: number) =>
+    request(`/api/library/playlists/${id}`, { method: "DELETE" }),
+  // 拖拽排序：传**完整新顺序**（局部交换在双标签页下会互相覆盖）
+  reorderPlaylist: (id: number, songIds: number[]) =>
+    request<{ order: number[] }>(`/api/library/playlists/${id}/order`, {
+      method: "PUT",
+      body: JSON.stringify({ song_ids: songIds }),
+    }),
+  removeFromPlaylist: (playlistId: number, songId: number) =>
+    request(`/api/library/playlists/${playlistId}/songs/${songId}`, { method: "DELETE" }),
+  // 批量
+  batchDelete: (songIds: number[]) =>
+    request<BatchResult>("/api/library/batch/delete", {
+      method: "POST",
+      body: JSON.stringify({ song_ids: songIds }),
+    }),
+  batchPublic: (songIds: number[], isPublic: boolean) =>
+    request<BatchResult>("/api/library/batch/public", {
+      method: "POST",
+      body: JSON.stringify({ song_ids: songIds, is_public: isPublic }),
+    }),
+  batchAddToPlaylist: (songIds: number[], playlistId: number) =>
+    request<BatchResult>("/api/library/batch/playlist", {
+      method: "POST",
+      body: JSON.stringify({ song_ids: songIds, playlist_id: playlistId }),
+    }),
+  // 回收站
+  trash: () => request<TrashItem[]>("/api/library/trash"),
+  restoreSong: (id: number) =>
+    request<SongView>(`/api/library/trash/${id}/restore`, { method: "POST" }),
+  purgeSong: (id: number) => request(`/api/library/trash/${id}`, { method: "DELETE" }),
+  emptyTrash: () => request<{ count: number }>("/api/library/trash/empty", { method: "POST" }),
+  // 文件夹（分组）
+  folders: (itemType?: "song" | "playlist") =>
+    request<FolderView[]>(`/api/library/folders${itemType ? `?item_type=${itemType}` : ""}`),
+  putInFolder: (name: string, itemType: "song" | "playlist", itemId: number) =>
+    request<FolderView>("/api/library/folders", {
+      method: "POST",
+      body: JSON.stringify({ name, item_type: itemType, item_id: itemId }),
+    }),
+  renameFolder: (folderId: number, name: string) =>
+    request<FolderView>(`/api/library/folders/${folderId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  deleteFolder: (folderId: number) =>
+    request(`/api/library/folders/${folderId}`, { method: "DELETE" }),
+  removeFolderItem: (itemId: number) =>
+    request(`/api/library/folder-items/${itemId}`, { method: "DELETE" }),
   // ── AI 一键优化助手 ──
   // assistLyrics = AI 生成歌词+标题（文案 LLM 优先，降级音乐引擎官方端点）；
   // assistStyle(mode) = 风格标签整理 | 主题扩写（文案 LLM 优先，降级本地规则）；

@@ -66,6 +66,10 @@ def _public_filters():
         Song.is_public.is_(True),
         Song.status == "completed",
         Song.moderation_status != "rejected",
+        # 软删（回收站）的作品一律不可见：软删会同时下架，但这里是**第二道闸**——
+        # 历史数据/并发写入下仍可能出现「deleted_at 非空却 is_public 为真」的行，
+        # 广场作为对外展示面按最严格条件收口。
+        Song.deleted_at.is_(None),
     ]
     # 机审开启时，显式 approved 才可见（与 explore 一致，防未审内容上架）
     if settings.enable_moderation:
@@ -88,7 +92,7 @@ def _visible_song(song_id: int, db: Session) -> Song:
     song = db.get(Song, song_id)
     if not song:
         raise HTTPException(status_code=404, detail="作品不存在")
-    if not song.is_public or song.status != "completed":
+    if not song.is_public or song.status != "completed" or song.deleted_at is not None:
         raise HTTPException(status_code=404, detail="作品不存在或未发布")
     if settings.enable_moderation and song.moderation_status != "approved":
         raise HTTPException(status_code=404, detail="作品不存在或未发布")
@@ -250,7 +254,7 @@ def my_favorites(
     rows = (
         db.query(Song)
         .join(SongFavorite, SongFavorite.song_id == Song.id)
-        .filter(SongFavorite.user_id == user.id)
+        .filter(SongFavorite.user_id == user.id, Song.deleted_at.is_(None))
         .order_by(SongFavorite.created_at.desc())
         .limit(limit)
         .all()

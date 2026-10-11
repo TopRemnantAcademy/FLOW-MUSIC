@@ -12,7 +12,7 @@ from app.audit import log_admin_access
 from app.config import settings
 from app.db import init_db
 from app.mureka_health import run_startup_preflight
-from app.routers import admin, auth, songs, flow, billing, plaza
+from app.routers import admin, auth, songs, flow, billing, plaza, library
 from app.routers.auth import _resolve_admin_role
 
 log = logging.getLogger("music-api")
@@ -184,6 +184,7 @@ app.include_router(admin.router)
 app.include_router(billing.router)
 # 广场（原「发现」）：已发布作品 + 排行 + 无文本互动（赞/收藏/星标）
 app.include_router(plaza.router)
+app.include_router(library.router)
 
 
 @app.get("/health")

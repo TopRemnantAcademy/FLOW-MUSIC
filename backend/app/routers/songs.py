@@ -94,6 +94,16 @@ class VisibilityReq(BaseModel):
     is_public: bool
 
 
+def _live():
+    """未软删（不在回收站）的 Song 过滤条件。
+
+    与 app/routers/library.py: 的同名函数是**同一份语义的两处实例**：本文件不能
+    反向 import library（library 依赖本文件的 _to_out/_interaction_stats，会成环）。
+    改这里时必须同步改那边——tests/test_library_org.py 钉住了两张查询面。
+    """
+    return Song.deleted_at.is_(None)
+
+
 def _interaction_stats(db: Session, song_ids: list[int], user_id: Optional[int]) -> dict[int, dict]:
     """批量聚合互动统计（赞/收藏/评分），避免逐首查询的 N+1。
 
@@ -714,6 +724,9 @@ def _load_spawn_parent(
     而访问控制一旦写两份就会漂移（机审用一份、落库用另一份 → 绕过口子再现）。
     """
     parent = db.get(Song, song_id)
+    if parent is not None and parent.deleted_at is not None:
+        # 回收站里的歌不能作为续写/翻唱/Remix 的基准（它已被作者移除）
+        parent = None
     if not parent:
         raise HTTPException(status_code=404, detail="源歌曲不存在")
     if require_owner and parent.user_id != user.id:
@@ -909,6 +922,7 @@ def explore_songs(
         Song.is_public.is_(True),
         Song.moderation_status == "approved",
         Song.status == "completed",
+        _live(),  # 回收站里的作品不回流公开流
     ]
     if q:
         like = f"%{q}%"
@@ -1353,6 +1367,10 @@ def get_song(
     song = db.get(Song, song_id)
     if not song:
         raise HTTPException(status_code=404, detail="歌曲不存在")
+    # 回收站里的歌对**所有人**（含所有者）都是 404：所有者要读它得先恢复，
+    # 否则「删了却还能打开」会让用户无法判断删除是否生效。
+    if song.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="歌曲不存在")
     owner_id = user.id if user is not None else None
     if song.user_id != owner_id and not song.is_public:
         raise HTTPException(status_code=404, detail="歌曲不存在")
@@ -1363,24 +1381,32 @@ def get_song(
 def delete_song(
     song_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    """删除自己的歌曲；子歌血缘解绑（parent_song_id 置 NULL）避免外键悬挂。
+    """删除自己的歌曲 → **进回收站**（GAP-011 起由硬删改为软删）。
 
-    [F5] 删除传播(2026-09-01): 关联 SyncRecord 를 ``revoked`` 로 마킹한다.
-    这样 FLOW APP 在 ``GET /api/v1/sync/flow`` 拉取歌单时会排除已删除歌曲
-    (list_flow 仅返回 status=="synced")，避免孤儿残留(설계 §11.4).
+    软删语义（为什么改）：
+    · 生成是有成本的（每首都扣过配额/钱包），硬删不给任何反悔路径，误点即永久损失；
+    · 回收站保留 30 天后由 ``routers/library.py`` 的清理路径真删（见 list_trash）；
+    · 同时下架（is_public=False）：已被作者删除的作品不该继续挂在广场对外可见。
+
+    [F5] 删除传播(2026-09-01)：关联 SyncRecord 标记 ``revoked``，FLOW APP 的
+    ``GET /api/v1/sync/flow`` 只返回 ``synced``，已删歌自然退出其歌单（설계 §11.4）。
+    ⚠ 关联行（互动/歌单成员/文件夹）**不在这里清理** —— 恢复时要原样回来，
+    真正的清理在 library._purge_song（彻底删除）。
+
+    重复删除是幂等的：已在回收站的歌再次 DELETE 不会刷新 deleted_at，
+    否则反复调用就能把「剩余天数」无限续期（过期清理形同虚设）。
     """
     song = db.get(Song, song_id)
     if not song or song.user_id != user.id:
         raise HTTPException(status_code=404, detail="歌曲不存在")
-    # [F5] 删除传播 — 关联同步记录标记 revoked
-    rec = db.query(SyncRecord).filter_by(song_id=song_id).first()
-    if rec:
-        rec.status = "revoked"
+    if song.deleted_at is None:
+        song.deleted_at = datetime.datetime.now(datetime.timezone.utc)
+        song.is_public = False
+        rec = db.query(SyncRecord).filter_by(song_id=song_id).first()
+        if rec:
+            rec.status = "revoked"
         db.commit()
-    db.query(Song).filter(Song.parent_song_id == song.id).update({Song.parent_song_id: None})
-    db.delete(song)
-    db.commit()
-    return {"detail": "deleted", "id": song_id}
+    return {"detail": "trashed", "id": song_id, "deleted_at": song.deleted_at.isoformat()}
 
 
 @router.patch("/{song_id}", response_model=SongOut)
@@ -1399,7 +1425,7 @@ def update_visibility(
     创建流程中的 is_public 勾选框已移除，公开动作统一走这里。
     """
     song = db.get(Song, song_id)
-    if not song or song.user_id != user.id:
+    if not song or song.user_id != user.id or song.deleted_at is not None:
         raise HTTPException(status_code=404, detail="歌曲不存在")
 
     if body.is_public:
@@ -1425,7 +1451,7 @@ def _owned_completed(song_id: int, db: Session, user: User) -> Song:
     song = db.get(Song, song_id)
     if not song:
         raise HTTPException(status_code=404, detail="歌曲不存在")
-    if song.user_id != user.id:
+    if song.user_id != user.id or song.deleted_at is not None:
         raise HTTPException(status_code=404, detail="歌曲不存在")
     if song.status != "completed":
         raise HTTPException(status_code=400, detail="源歌曲尚未生成完成")
@@ -1767,7 +1793,7 @@ def list_songs(
 ):
     songs = (
         db.query(Song)
-        .filter(Song.user_id == user.id)
+        .filter(Song.user_id == user.id, _live())
         .order_by(Song.id.desc())
         .limit(limit)
         .offset(offset)
@@ -1787,7 +1813,9 @@ def my_billing(
     cost_cny/price_cny/margin_cny 를 사용자도 **자기 곡 범위**에서 확인할 수 있게 한다.
     (공개 SongOut 에는 미노출 — 타인 곡 경제정보 유출 방지)
     """
-    songs = db.query(Song).filter(Song.user_id == user.id).all()
+    # 回收站里的歌不算在「我的作品」里：它们已经不在用户可见的库中，
+    # 计进总量会让「删了歌但统计没变」看起来像删除失效。
+    songs = db.query(Song).filter(Song.user_id == user.id, _live()).all()
     total_cost = sum(float(s.cost_cny or 0) for s in songs)
     total_price = sum(float(s.price_cny or 0) for s in songs)
     total_margin = round(total_price - total_cost, 4)
@@ -1828,7 +1856,9 @@ def play_song(
     """播放计数 +1（供前端播放时调用）。自己或已公开的歌均可计数。"""
     rate_limit_play(request.client.host if request.client else "unknown")
     song = db.get(Song, song_id)
-    if not song or (song.user_id != user.id and not song.is_public):
+    if not song or song.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="歌曲不存在")
+    if song.user_id != user.id and not song.is_public:
         raise HTTPException(status_code=404, detail="歌曲不存在")
     song.play_count = (song.play_count or 0) + 1
     db.commit()
@@ -1862,7 +1892,9 @@ def download_song(
     from app.storage.s3 import download_to_temp
 
     song = db.get(Song, song_id)
-    if not song or (song.user_id != user.id and not song.is_public):
+    if not song or song.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="歌曲不存在")
+    if song.user_id != user.id and not song.is_public:
         raise HTTPException(status_code=404, detail="歌曲不存在")
     if not can_download(user):
         raise HTTPException(status_code=403, detail="订阅后可下载完整音频")
@@ -1913,7 +1945,9 @@ def preview_audio(
 
     rate_limit_preview(str(user.id))
     song = db.get(Song, song_id)
-    if not song or (song.user_id != user.id and not song.is_public):
+    if not song or song.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="试听片段不可用")
+    if song.user_id != user.id and not song.is_public:
         raise HTTPException(status_code=404, detail="试听片段不可用")
     if not song.audio_url:
         raise HTTPException(status_code=404, detail="试听片段不可用")

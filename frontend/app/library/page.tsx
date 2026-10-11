@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, SongView } from "@/lib/api";
+import { api, FolderView, PlaylistView, SongView, TrashItem } from "@/lib/api";
 import Player from "@/components/Player";
 import ConfirmDialog from "@/components/ConfirmDialog";
 
@@ -16,6 +16,21 @@ export default function LibraryPage() {
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<SongView | null>(null);
+
+  // ── GAP-011 库组织 ──
+  // tab: songs = 我的作品（含多选/歌单/分组入口）；trash = 回收站
+  const [tab, setTab] = useState<"songs" | "trash">("songs");
+  const [selected, setSelected] = useState<number[]>([]); // 多选集合（批量操作对象）
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [notice, setNotice] = useState(""); // 批量结果回执（含 skipped 明细）
+  const [playlists, setPlaylists] = useState<PlaylistView[]>([]);
+  const [folders, setFolders] = useState<FolderView[]>([]);
+  const [newPlaylist, setNewPlaylist] = useState("");
+  const [folderFor, setFolderFor] = useState<SongView | null>(null);
+  const [folderName, setFolderName] = useState("");
+  const [trash, setTrash] = useState<TrashItem[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const [pendingPurge, setPendingPurge] = useState<TrashItem | null>(null);
 
   // 分轨导出（stem）：同步接口，结果含会过期的 zip 链接。
   const [stemBusy, setStemBusy] = useState<number | null>(null);
@@ -50,9 +65,131 @@ export default function LibraryPage() {
     }
   }
 
+  async function loadLibrary() {
+    try {
+      const [pls, fds] = await Promise.all([api.playlists(), api.folders()]);
+      setPlaylists(pls);
+      setFolders(fds);
+    } catch (e: any) {
+      if (e?.status !== 401) setError(e?.message || "歌单/分组加载失败");
+    }
+  }
+
+  async function loadTrash() {
+    setTrashLoading(true);
+    try {
+      setTrash(await api.trash());
+    } catch (e: any) {
+      setError(e?.message || "回收站加载失败");
+    } finally {
+      setTrashLoading(false);
+    }
+  }
+
   useEffect(() => {
     load(true);
+    loadLibrary();
   }, []);
+
+  useEffect(() => {
+    if (tab === "trash") loadTrash();
+  }, [tab]);
+
+  // ── 批量操作 ──
+  const allSelected = songs.length > 0 && selected.length === songs.length;
+
+  function toggleSelect(id: number) {
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  function toggleSelectAll() {
+    setSelected(allSelected ? [] : songs.map((s) => s.id));
+  }
+
+  function describeSkip(skipped: (number | { id: number; reason: string })[] = []) {
+    if (skipped.length === 0) return "";
+    const withReason = skipped.filter((x): x is { id: number; reason: string } => typeof x !== "number");
+    return withReason.length
+      ? `，跳过 ${skipped.length} 首（${withReason.map((x) => x.reason).join("；")}）`
+      : `，跳过 ${skipped.length} 首`;
+  }
+
+  async function runBatch(fn: (ids: number[]) => Promise<any>, label: string, dropFromList = false) {
+    if (selected.length === 0) return;
+    setBatchBusy(true);
+    setNotice("");
+    try {
+      const r = await fn(selected);
+      const n =
+        r.deleted?.length ?? r.updated?.length ?? r.added?.length ?? 0;
+      setNotice(`${label}：${n} 首${describeSkip(r.skipped)}`);
+      if (dropFromList) setSongs((prev) => prev.filter((s) => !selected.includes(s.id)));
+      setSelected([]);
+      if (tab === "trash") await loadTrash();
+    } catch (e: any) {
+      setError(e?.message || `${label}失败`);
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  async function onBatchAddToPlaylist(playlistId: number) {
+    if (!playlistId) return;
+    await runBatch((ids) => api.batchAddToPlaylist(ids, playlistId), "加入播放列表");
+    await loadLibrary();
+  }
+
+  async function onCreatePlaylist() {
+    const name = newPlaylist.trim();
+    if (!name) return;
+    try {
+      const pl = await api.createPlaylist(name);
+      setNewPlaylist("");
+      setPlaylists((prev) => [pl, ...prev]);
+      setNotice(`已建立播放列表「${pl.name}」，可勾选歌曲后加入`);
+    } catch (e: any) {
+      setError(e?.message || "建立播放列表失败");
+    }
+  }
+
+  async function onPutInFolder() {
+    const s = folderFor;
+    const name = folderName.trim();
+    if (!s || !name) return;
+    try {
+      await api.putInFolder(name, "song", s.id);
+      setFolderFor(null);
+      setFolderName("");
+      setFolders(await api.folders());
+      setNotice(`已把《${s.title || "未命名"}》归入「${name}」`);
+    } catch (e: any) {
+      setError(e?.message || "归入分组失败");
+    }
+  }
+
+  async function onRestore(item: TrashItem) {
+    try {
+      await api.restoreSong(item.id);
+      setTrash((prev) => prev.filter((x) => x.id !== item.id));
+      await load(true); // 恢复的歌要回到「我的作品」
+      setNotice(`已恢复《${item.title || "未命名"}》`);
+    } catch (e: any) {
+      setError(e?.message || "恢复失败");
+    }
+  }
+
+  async function confirmPurge() {
+    const item = pendingPurge;
+    if (!item) return;
+    setPendingPurge(null);
+    try {
+      await api.purgeSong(item.id);
+      setTrash((prev) => prev.filter((x) => x.id !== item.id));
+      setNotice("已彻底删除（不可恢复）");
+    } catch (e: any) {
+      setError(e?.message || "彻底删除失败");
+    }
+  }
 
   async function onTogglePublic(s: SongView) {
     try {
@@ -71,6 +208,7 @@ export default function LibraryPage() {
       await api.deleteSong(s.id);
       // O6：本地移除即可，避免整页 load(true) 重新拉取列表造成的闪烁/重载
       setSongs((prev) => prev.filter((x) => x.id !== s.id));
+      setNotice(`《${s.title || "未命名"}》已移入回收站，30 天内可恢复`);
     } catch (e: any) {
       setError(e?.message || "删除失败");
     }
@@ -145,29 +283,172 @@ export default function LibraryPage() {
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
-      <h1 className="mb-6 text-2xl font-bold text-[var(--ink)]">我的作品</h1>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold text-[var(--ink)]">
+          {tab === "songs" ? "我的作品" : "回收站"}
+        </h1>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setTab("songs")}
+            className={`btn btn-sm ${tab === "songs" ? "btn-primary" : "btn-secondary"}`}
+          >
+            我的作品
+          </button>
+          <button
+            onClick={() => setTab("trash")}
+            className={`btn btn-sm ${tab === "trash" ? "btn-primary" : "btn-secondary"}`}
+          >
+            回收站{trash.length > 0 && tab === "trash" ? `（${trash.length}）` : ""}
+          </button>
+        </div>
+      </div>
 
       {loading && <p className="text-[var(--muted)]">加载中…</p>}
-      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
-      {!loading && songs.length === 0 && (
-        <div className="card p-6 text-center">
-          <p className="mb-3 text-[var(--muted)]">还没有作品。</p>
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <Link href="/create" className="btn btn-primary">
-              创作第一首
-            </Link>
-            <Link href="/plaza" className="btn btn-secondary">
-              去FLOW广场
-            </Link>
-          </div>
-        </div>
+      {error && <p className="mb-3 text-sm text-[var(--danger)]">{error}</p>}
+      {notice && (
+        <p className="mb-3 rounded-lg bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--ink)]">
+          {notice}
+          <button onClick={() => setNotice("")} className="ml-2 text-xs text-[var(--muted)] underline">
+            知道了
+          </button>
+        </p>
       )}
+
+      {tab === "trash" && (
+        <section className="space-y-3">
+          <p className="text-sm text-[var(--muted)]">
+            删除的作品会在这里保留 30 天，到期后自动清理。恢复后歌单与收藏原样回来。
+          </p>
+          {trashLoading && <p className="text-[var(--muted)]">加载中…</p>}
+          {!trashLoading && trash.length === 0 && (
+            <div className="card p-6 text-center text-[var(--muted)]">回收站是空的。</div>
+          )}
+          {trash.map((t) => (
+            <div key={t.id} className="card flex flex-wrap items-center justify-between gap-3 p-4">
+              <div>
+                <p className="font-semibold text-[var(--ink)]">{t.title || "未命名"}</p>
+                <p className="text-xs text-[var(--muted)]">
+                  剩余 {t.days_left ?? 0} 天（保留 {t.keep_days ?? 30} 天）
+                  {t.expires_at ? `，将于 ${t.expires_at.slice(0, 10)} 清理` : ""}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => onRestore(t)} className="btn btn-secondary btn-sm">
+                  恢复
+                </button>
+                <button onClick={() => setPendingPurge(t)} className="btn btn-danger btn-sm">
+                  彻底删除
+                </button>
+              </div>
+            </div>
+          ))}
+          {trash.length > 0 && (
+            <button
+              onClick={async () => {
+                try {
+                  const r = await api.emptyTrash();
+                  setTrash([]);
+                  setNotice(`已清空回收站（${r.count} 首永久删除）`);
+                } catch (e: any) {
+                  setError(e?.message || "清空回收站失败");
+                }
+              }}
+              className="btn btn-danger w-full"
+            >
+              清空回收站
+            </button>
+          )}
+        </section>
+      )}
+
+      {tab === "songs" && (
+        <>
+          <PlaylistPanel
+            playlists={playlists}
+            folders={folders}
+            selectedCount={selected.length}
+            newPlaylist={newPlaylist}
+            onNewPlaylistChange={setNewPlaylist}
+            onCreatePlaylist={onCreatePlaylist}
+            onAddToPlaylist={onBatchAddToPlaylist}
+            busy={batchBusy}
+            onDeletePlaylist={async (id) => {
+              try {
+                await api.deletePlaylist(id);
+                setPlaylists((prev) => prev.filter((x) => x.id !== id));
+              } catch (e: any) {
+                setError(e?.message || "删除播放列表失败");
+              }
+            }}
+            onDeleteFolder={async (id) => {
+              try {
+                await api.deleteFolder(id);
+                setFolders(await api.folders());
+              } catch (e: any) {
+                setError(e?.message || "解散分组失败");
+              }
+            }}
+          />
+
+          {songs.length > 0 && (
+            <div className="card mb-4 flex flex-wrap items-center gap-2 p-3 text-sm">
+              <label className="flex items-center gap-1">
+                <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />
+                全选（{selected.length}/{songs.length}）
+              </label>
+              <span className="flex-1" />
+              <button
+                disabled={selected.length === 0 || batchBusy}
+                onClick={() => runBatch((ids) => api.batchPublic(ids, true), "批量公开")}
+                className="btn btn-secondary btn-sm"
+              >
+                批量公开
+              </button>
+              <button
+                disabled={selected.length === 0 || batchBusy}
+                onClick={() => runBatch((ids) => api.batchPublic(ids, false), "批量下架")}
+                className="btn btn-secondary btn-sm"
+              >
+                批量下架
+              </button>
+              <button
+                disabled={selected.length === 0 || batchBusy}
+                onClick={() => runBatch(api.batchDelete, "批量删除", true)}
+                className="btn btn-danger btn-sm"
+              >
+                批量删除
+              </button>
+            </div>
+          )}
+
+          {!loading && songs.length === 0 && (
+            <div className="card p-6 text-center">
+              <p className="mb-3 text-[var(--muted)]">还没有作品。</p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Link href="/create" className="btn btn-primary">
+                  创作第一首
+                </Link>
+                <Link href="/plaza" className="btn btn-secondary">
+                  去FLOW广场
+                </Link>
+              </div>
+            </div>
+          )}
 
       <div className="space-y-4">
         {songs.map((s) => (
           <div key={s.id} className="card p-4">
             <div className="mb-2 flex items-start justify-between gap-3">
-              <h3 className="font-semibold">{s.title || "未命名"}</h3>
+              <div className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={selected.includes(s.id)}
+                  onChange={() => toggleSelect(s.id)}
+                  aria-label={`选择 ${s.title || "未命名"}`}
+                />
+                <h3 className="font-semibold">{s.title || "未命名"}</h3>
+              </div>
               <span className="rounded-full bg-[var(--surface-2)] px-2 py-0.5 text-xs text-[var(--muted)]">
                 {s.status}
               </span>
@@ -197,6 +478,15 @@ export default function LibraryPage() {
                 发布到广场
               </label>
               <button
+                onClick={() => {
+                  setFolderFor(s);
+                  setFolderName("");
+                }}
+                className="btn btn-secondary btn-sm"
+              >
+                归入分组
+              </button>
+              <button
                 onClick={() => setPendingDelete(s)}
                 className="btn btn-danger btn-sm"
               >
@@ -220,6 +510,23 @@ export default function LibraryPage() {
                 </>
               )}
             </div>
+
+            {folderFor?.id === s.id && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[var(--surface-2)] p-3">
+                <input
+                  value={folderName}
+                  onChange={(e) => setFolderName(e.target.value)}
+                  className="input"
+                  placeholder="分组名称（如：电子 / 客户 A）"
+                />
+                <button onClick={onPutInFolder} className="btn btn-primary btn-sm">
+                  存入
+                </button>
+                <button onClick={() => setFolderFor(null)} className="btn btn-secondary btn-sm">
+                  取消
+                </button>
+              </div>
+            )}
 
             {s.status === "completed" && stemResults[s.id] && (
               <div className="mt-2 rounded-lg bg-[var(--surface-2)] p-3 text-xs">
@@ -319,14 +626,121 @@ export default function LibraryPage() {
         title="删除作品"
         message={
           pendingDelete
-            ? `确定删除《${pendingDelete.title || "未命名"}》？此操作不可恢复。`
+            ? `确定把《${pendingDelete.title || "未命名"}》移入回收站？30 天内可以恢复。`
             : ""
         }
-        confirmText="删除"
+        confirmText="移入回收站"
         danger
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
       />
+
+      <ConfirmDialog
+        open={!!pendingPurge}
+        title="彻底删除"
+        message={
+          pendingPurge
+            ? `确定彻底删除《${pendingPurge.title || "未命名"}》？此操作不可恢复，收藏与歌单中的记录也会一并清除。`
+            : ""
+        }
+        confirmText="彻底删除"
+        danger
+        onConfirm={confirmPurge}
+        onCancel={() => setPendingPurge(null)}
+      />
+        </>
+      )}
     </main>
+  );
+}
+
+/** 播放列表 / 分组面板：建立歌单、把勾选歌曲加入、解散分组。 */
+function PlaylistPanel({
+  playlists,
+  folders,
+  selectedCount,
+  newPlaylist,
+  onNewPlaylistChange,
+  onCreatePlaylist,
+  onAddToPlaylist,
+  onDeletePlaylist,
+  onDeleteFolder,
+  busy,
+}: {
+  playlists: PlaylistView[];
+  folders: FolderView[];
+  selectedCount: number;
+  newPlaylist: string;
+  onNewPlaylistChange: (v: string) => void;
+  onCreatePlaylist: () => void;
+  onAddToPlaylist: (playlistId: number) => void;
+  onDeletePlaylist: (id: number) => void;
+  onDeleteFolder: (id: number) => void;
+  busy: boolean;
+}) {
+  const [target, setTarget] = useState<string>("");
+
+  return (
+    <section className="card mb-4 p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <input
+          value={newPlaylist}
+          onChange={(e) => onNewPlaylistChange(e.target.value)}
+          className="input flex-1"
+          placeholder="新建播放列表名称"
+        />
+        <button onClick={onCreatePlaylist} className="btn btn-primary btn-sm">
+          新建
+        </button>
+      </div>
+
+      {playlists.length === 0 ? (
+        <p className="text-sm text-[var(--muted)]">还没有播放列表。</p>
+      ) : (
+        <ul className="space-y-2">
+          {playlists.map((pl) => (
+            <li key={pl.id} className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-medium text-[var(--ink)]">{pl.name}</span>
+              <span className="text-xs text-[var(--muted)]">{pl.song_count ?? 0} 首</span>
+              <span className="flex-1" />
+              <button
+                disabled={selectedCount === 0 || busy}
+                onClick={() => onAddToPlaylist(pl.id)}
+                className="btn btn-secondary btn-sm"
+                title={selectedCount === 0 ? "先勾选歌曲" : `把已勾选的 ${selectedCount} 首加入`}
+              >
+                加入已勾选
+              </button>
+              <button onClick={() => onDeletePlaylist(pl.id)} className="btn btn-danger btn-sm">
+                删除歌单
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {folders.length > 0 && (
+        <div className="mt-4 border-t border-[var(--line)] pt-3">
+          <p className="mb-2 text-xs text-[var(--muted)]">分组</p>
+          <ul className="space-y-1 text-sm">
+            {folders.map((f) => (
+              <li key={f.id} className="flex items-center gap-2">
+                <span className="text-[var(--ink)]">
+                  {f.name}（{f.count}）
+                </span>
+                <span className="flex-1 text-xs text-[var(--muted)]">
+                  {f.items
+                    .map((i) => i.title ?? (i.item_type === "playlist" ? "播放列表" : `#${i.item_id}`))
+                    .join("、")}
+                </span>
+                <button onClick={() => onDeleteFolder(f.id)} className="btn btn-danger btn-sm">
+                  解散
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
   );
 }
