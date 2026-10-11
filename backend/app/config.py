@@ -339,6 +339,53 @@ class Settings(BaseSettings):
         "AUD,CAD,CZK,DKK,EUR,GBP,HKD,HUF,ILS,JPY,MXN,NZD,NOK,PHP,PLN,SGD,SEK,CHF,THB,TWD,USD"
     )
 
+    # ================= GAP-002 이메일 인증 / 비밀번호 재설정 / MFA =================
+    # 이메일 발송 채널 (표준 라이브러리 smtplib만 사용 — 제3자 메일 API를 날조하지 않는다).
+    # smtp_host 가 비어 있으면 "개발 모드": 실제 발송하지 않고 로그만 남긴다(warning).
+    # 자격증명이 준비되면 app/services/email.py 의 send_email() 함수 본문만 교체하면 된다.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    # STARTTLS 사용 여부. 465(implicit TLS) 를 쓰는 경우엔 smtp_use_ssl=True 로 두고
+    # smtp_use_starttls=False 로 설정한다(둘은 상호배타 — 동시에 켜면 의미가 없다).
+    smtp_use_starttls: bool = True
+    smtp_use_ssl: bool = False
+    smtp_from: str = "no-reply@flow-music.local"  # From 헤더(서버가 거부하지 않는 주소로 교체)
+    smtp_timeout: float = 10.0  # 발송 타임아웃(초) — SMTP 서버 다운이 요청 스레드를 붙잡지 않게
+    # ENABLE_EMAIL_DELIVERY=True 인데 smtp_host 가 비어 있으면 → 503(조용한 "성공처럼 보임" 금지).
+    enable_email_delivery: bool = False
+
+    # 프론트엔드 베이스 URL — 메일 본문의 링크 생성용(비우면 cors_origins 첫 항목으로 폴백).
+    frontend_url: str = ""
+
+    # token 유효기간(분) / 재발송 쿨다운(초)
+    email_verify_token_expire_minutes: int = 60 * 24  # 24h
+    password_reset_token_expire_minutes: int = 30  # 30min
+    auth_email_resend_cooldown_seconds: int = 60  # 재발송 쿨다운
+
+    # 계정 잠금 (IP 레이트리밋과 **상보적** — IP 제한은 분산 공격에 뚫리므로
+    # "단일 계정 브루트포스"는 계정 레벨 잠금이 정답이다).
+    auth_max_failed_logins: int = 5
+    auth_lockout_minutes: int = 15
+
+    # TOTP window: ±1 스텝(=±30s). 시계 드리프트는 허용하되 "±1분"처럼 과장하지 않는다.
+    mfa_totp_valid_window: int = 1
+
+    # 로그인 / 이메일 관련 엔드포인트 IP 레이트리밋(분당)
+    verify_rate_limit_per_minute: int = 20
+    resend_verification_rate_limit_per_minute: int = 5
+    forgot_password_rate_limit_per_minute: int = 5
+    reset_password_rate_limit_per_minute: int = 10
+
+    @property
+    def frontend_base_url(self) -> str:
+        """메일 링크용 프론트엔드 베이스 URL. 명시값 우선, 없으면 cors_origins 첫 항목."""
+        if self.frontend_url.strip():
+            return self.frontend_url.strip().rstrip("/")
+        origins = self.cors_origin_list
+        return (origins[0] if origins else "http://localhost:3000").rstrip("/")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

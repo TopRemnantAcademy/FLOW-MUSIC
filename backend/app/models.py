@@ -28,6 +28,20 @@ class User(Base):
     tier_key = Column(
         String(32), nullable=True
     )  # 用户当前套餐（计费归因；空=未订阅/按 free 标准价）
+    # ---- GAP-002 邮箱验证 / 密码重置 / MFA / 失败锁定 ----
+    # 验证与重置 token **只存 sha256 摘要**：明文仅出现在邮件链接里，DB 备份或日志
+    # 泄露也换不出可用 token（存明文 = 任何一次库泄露都等于账号接管）。
+    email_verified = Column(Boolean, default=False, nullable=False, server_default="0")
+    verify_token = Column(String(64), nullable=True)  # 邮箱验证 token 的 sha256 摘要
+    verify_sent_at = Column(DateTime(timezone=True), nullable=True)  # 上次发信时刻（重发冷却）
+    reset_token = Column(String(64), nullable=True)  # 密码重置 token 的 sha256 摘要
+    reset_sent_at = Column(DateTime(timezone=True), nullable=True)  # 重置发信时刻（冷却+过期）
+    mfa_secret = Column(String(64), nullable=True)  # TOTP base32 密钥；永不进任何响应模型
+    # 与 mfa_secret 拆成两列：绑定必须 setup→enable 两步确认。若以「secret 非空」当启用开关，
+    # 用户扫错码的那一刻就把自己锁在门外（无法登录、也无法自行关闭）。
+    mfa_enabled = Column(Boolean, default=False, nullable=False, server_default="0")
+    failed_logins = Column(Integer, default=0, nullable=False, server_default="0")  # 连续失败计数
+    locked_until = Column(DateTime(timezone=True), nullable=True)  # 账户锁定截止时刻
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

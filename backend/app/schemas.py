@@ -14,6 +14,8 @@ class RegisterReq(BaseModel):
 class LoginReq(BaseModel):
     email: EmailStr
     password: str
+    # GAP-002 2단계 인증: MFA 활성 계정은 otp(TOTP 6자리) 동반 시에만 토큰 발급.
+    otp: Optional[str] = None
 
 
 class TokenResp(BaseModel):
@@ -26,6 +28,53 @@ class MeResp(BaseModel):
 
     id: int
     email: EmailStr
+    # GAP-002: 프론트가 "인증 메일 재발송" 배너를 띄울지 판단하는 근거.
+    email_verified: bool = False
+    mfa_enabled: bool = False
+
+
+# ---------- GAP-002 이메일 인증 / 비밀번호 재설정 / MFA ----------
+class VerifyEmailReq(BaseModel):
+    token: str
+
+
+class ForgotPasswordReq(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordReq(BaseModel):
+    token: str
+    new_password: str
+
+
+class MfaCodeReq(BaseModel):
+    """MFA enable 단계: TOTP 6자리 코드."""
+
+    code: str
+
+
+class MfaDisableReq(BaseModel):
+    """MFA disable: 비밀번호 재확인(2차 인증 없이 끌 수 없게)."""
+
+    password: str
+
+
+class MfaSetupResp(BaseModel):
+    """MFA setup 응답. ⚠ secret 은 **이 응답에서만 1회** 노출된다.
+
+    이후 조회 경로는 없다(다시 발급 = 새 secret). otpauth URI 는 QR 생성용 표준 문자열.
+    """
+
+    secret: str
+    otpauth_uri: str
+    enabled: bool = False
+
+
+class StatusResp(BaseModel):
+    """단순 상태 응답(과도한 전용 모델 남발 회피)."""
+
+    status: str
+    detail: Optional[str] = None
 
 
 # ---------- 歌曲生成 ----------

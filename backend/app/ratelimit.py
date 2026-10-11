@@ -107,3 +107,46 @@ def rate_limit_vocal_clone(user_key: str) -> None:
         settings.vocal_clone_rate_limit_per_minute,
         "音色克隆请求过于频繁，请稍后再试",
     )
+
+
+# ── GAP-002 이메일 인증 / 비밀번호 재설정 (IP 레벨 슬라이딩 윈도우) ──
+# 목적: verify/forgot/reset 은 **익명** 접근이 가능한 엔드포인트다.
+#   · /verify·/reset-password 는 token 추측(무차별 대입) 표면,
+#   · /forgot-password 는 메일 폭탄(상대방에게 무한 발송) 표면.
+# 계정 레벨 잠금(locked_until)과 **상보적**으로 IP 레벨도 막는다.
+
+
+def rate_limit_verify(ip: str) -> None:
+    _sliding_window(
+        f"verify:{ip}",
+        60.0,
+        settings.verify_rate_limit_per_minute,
+        "인증 시도가 너무 잦습니다. 잠시 후 다시 시도하세요",
+    )
+
+
+def rate_limit_resend_verification(ip: str) -> None:
+    _sliding_window(
+        f"resend:{ip}",
+        60.0,
+        settings.resend_verification_rate_limit_per_minute,
+        "인증 메일 재발송이 너무 잦습니다. 잠시 후 다시 시도하세요",
+    )
+
+
+def rate_limit_forgot_password(ip: str) -> None:
+    _sliding_window(
+        f"forgot:{ip}",
+        60.0,
+        settings.forgot_password_rate_limit_per_minute,
+        "요청이 너무 잦습니다. 잠시 후 다시 시도하세요",
+    )
+
+
+def rate_limit_reset_password(ip: str) -> None:
+    _sliding_window(
+        f"reset:{ip}",
+        60.0,
+        settings.reset_password_rate_limit_per_minute,
+        "요청이 너무 잦습니다. 잠시 후 다시 시도하세요",
+    )

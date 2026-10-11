@@ -1,5 +1,7 @@
-"""鉴权路由：注册 / 登录 / 当前用户依赖。"""
+"""鉴权路由：注册 / 登录 / 当前用户依赖 / GAP-002 邮箱验证·密码重置·MFA。"""
 
+import hashlib
+import secrets
 from typing import Optional
 import hmac
 from datetime import datetime, timedelta, timezone
@@ -15,17 +17,34 @@ from app.config import settings
 from app.billing.service import enforce_subscription_validity
 from app.db import get_db
 from app.models import User, UserLink
-from app.ratelimit import rate_limit_login, rate_limit_register, rate_limit_sync
+from app.ratelimit import (
+    rate_limit_forgot_password,
+    rate_limit_login,
+    rate_limit_register,
+    rate_limit_resend_verification,
+    rate_limit_reset_password,
+    rate_limit_sync,
+    rate_limit_verify,
+)
 from app.entitlements import resolve_limits, VALID_TIERS
 from app.schemas import (
     FlowExchangeReq,
     FlowExchangeResp,
     FlowLinkReq,
+    ForgotPasswordReq,
     LoginReq,
     MeResp,
+    MfaCodeReq,
+    MfaDisableReq,
+    MfaSetupResp,
     RegisterReq,
+    ResetPasswordReq,
+    StatusResp,
     TokenResp,
+    VerifyEmailReq,
 )
+from app.security import totp
+from app.services import email as email_service
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -35,6 +54,106 @@ oauth2 = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 # 单一来源：flow.py 的三个 sync 端点与令牌签发（flow-token / flow-exchange）共用，
 # 避免字符串漂移导致的静默 401。
 SYNC_FLOW_SCOPE = "sync:flow"
+
+
+# ── GAP-002 헬퍼 ─────────────────────────────────────────────────────────────
+# token 은 **sha256 요약만** DB 에 저장한다. 평문은 이메일 링크에만 존재하므로
+# DB 백업/로그가 유출돼도 재사용 가능한 token 을 얻을 수 없다.
+# (평문 저장 = 단 한 번의 DB 유출이 전 계정 탈취로 직결된다.)
+
+
+def _hash_token(raw: str) -> str:
+    """평문 token → sha256 16진수 요약(64자)."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _issue_token() -> tuple[str, str]:
+    """(평문, 요약) 쌍 발급. secrets.token_urlsafe(32) = 256비트 엔트로피."""
+    raw = secrets.token_urlsafe(32)
+    return raw, _hash_token(raw)
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """SQLite 는 tz-aware 값을 naive 로 돌려줄 수 있다 — 비교 전에 UTC 로 정규화.
+
+    이 정규화를 빼먹으면 naive vs aware 비교에서 TypeError 가 나거나(운 좋은 경우)
+    조용히 잘못된 만료 판정이 난다.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _locked_now(user: User) -> bool:
+    """계정이 현재 잠금 상태인지. 잠금이 만료됐으면 즉시 해제(자동 복구)."""
+    until = _as_utc(user.locked_until)
+    if until is None:
+        return False
+    if until <= _now():
+        # 만료된 잠금은 청소 — 여기서 지우지 않으면 해제 이후에도 잔존 값이 남는다.
+        user.locked_until = None
+        user.failed_logins = 0
+        return False
+    return True
+
+
+def _register_failed_login(db: Session, user: User) -> None:
+    """실패 누적 → 임계 도달 시 계정 잠금. 호출부가 commit 한다."""
+    user.failed_logins = (user.failed_logins or 0) + 1
+    if user.failed_logins >= settings.auth_max_failed_logins:
+        user.locked_until = _now() + timedelta(minutes=settings.auth_lockout_minutes)
+    db.commit()
+
+
+def _clear_login_failures(db: Session, user: User) -> None:
+    """로그인 성공(또는 비밀번호 재설정) 시 실패 카운터·잠금 초기화."""
+    user.failed_logins = 0
+    user.locked_until = None
+    db.commit()
+
+
+def _account_locked_detail() -> str:
+    return "계정이 일시적으로 잠금되었습니다. 잠시 후 다시 시도하세요"
+
+
+def _issue_verification(user: User, db: Session) -> Optional[str]:
+    """인증 token 발급 + 저장 + 발송. 발송까지 성공하면 평문을 반환, 아니면 None.
+
+    반환값이 평문인 이유: 개발 모드(메일 미구성)에서 응답으로 돌려줄 수 있게.
+    ⚠ 평문을 DB 에 저장하지 않는다 — 요약만 저장.
+    """
+    raw, digest = _issue_token()
+    user.verify_token = digest
+    user.verify_sent_at = _now()
+    db.commit()
+    ok = email_service.send_verification_email(
+        user.email, raw, settings.email_verify_token_expire_minutes
+    )
+    return raw if ok else None
+
+
+def _send_verification(user: User, db: Session) -> Optional[str]:
+    """인증 메일 발송(실패해도 예외를 올리지 않음 — 가입/재발송 흐름을 깨지 않게).
+
+    단, 운영 의도(enable_email_delivery)에서 채널 미구성이면 503 으로 **크게 실패**한다 —
+    "보냈다"고 거짓말하지 않기 위해. (ensure_delivery_available 참조)
+    """
+    email_service.ensure_delivery_available()
+    try:
+        return _issue_verification(user, db)
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 — 발송 실패가 가입을 실패시키면 안 된다
+        import logging
+
+        logging.getLogger(__name__).exception("[auth] 인증 메일 발송 실패 user_id=%s", user.id)
+        return None
 
 
 def hash_password(p: str) -> str:
@@ -241,10 +360,15 @@ def register(req: RegisterReq, request: Request, response: Response, db: Session
     if db.query(User).filter(User.email == req.email).first():
         raise HTTPException(status_code=409, detail="邮箱已注册")
     hashed = hash_password(req.password)
-    user = User(email=req.email, hashed_password=hashed)
+    # GAP-002: 가입 즉시 활성화하지 않는다(email_verified=False).
+    # 미인증 계정은 로그인은 되지만 인증 유도 배너가 뜬다 — 서비스 진입 자체를 막지 않는
+    # 이유는 "메일이 안 오면 계정이 영영 못 쓰는" 최악의 UX 를 피하기 위함이다.
+    user = User(email=req.email, hashed_password=hashed, email_verified=False)
     db.add(user)
     db.commit()
     db.refresh(user)
+    # 인증 메일 발송 실패가 회원가입 자체를 실패시키지 않는다(사용자는 /resend-verification 로 재시도 가능).
+    _send_verification(user, db)
     token = create_token(user.id)
     # [SEC] 2026-09-13：JWT 写入 HttpOnly cookie（不再返回给 JS 存 localStorage）。
     _set_auth_cookie(response, token, request)
@@ -255,8 +379,33 @@ def register(req: RegisterReq, request: Request, response: Response, db: Session
 def login(req: LoginReq, request: Request, response: Response, db: Session = Depends(get_db)):
     rate_limit_login(request.client.host if request.client else "unknown")
     user = db.query(User).filter(User.email == req.email).first()
+
+    # [GAP-002] 계정 잠금은 **비밀번호 검증보다 먼저** 판정한다.
+    # 나중에 판정하면, 공격자가 5번째 시도에서 우연히 정답을 맞추는 순간
+    # 잠금 상태였음에도 로그인에 성공해 버린다(잠금이 무력화된다).
+    if user and _locked_now(user):
+        db.commit()  # 만료 잠금 청소 결과 반영
+        raise HTTPException(status_code=401, detail=_account_locked_detail())
+
     if not user or not verify_password(req.password, user.hashed_password):
+        if user:
+            _register_failed_login(db, user)
+        # 사용자 부재와 비밀번호 오류를 **구분하지 않는다**(계정 열거 방지).
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
+
+    # [GAP-002] MFA 활성 계정: TOTP 없이는 토큰을 발급하지 않는다.
+    # ⚠ 쿠키도 쓰지 않는다 — "otp 없이 쿠키는 이미 심어져 있다"는 우회를 원천 차단.
+    if user.mfa_enabled:
+        if not req.otp:
+            raise HTTPException(status_code=401, detail="两步验证码需要（otp）")
+        if not user.mfa_secret or not totp.verify(
+            user.mfa_secret, req.otp, valid_window=settings.mfa_totp_valid_window
+        ):
+            # OTP 오류도 실패로 누적한다 — MFA 가 2차 브루트포스 표면이 되지 않게.
+            _register_failed_login(db, user)
+            raise HTTPException(status_code=401, detail="两步验证码错误")
+
+    _clear_login_failures(db, user)
     token = create_token(user.id)
     # [SEC] 2026-09-13：JWT 写入 HttpOnly cookie。
     _set_auth_cookie(response, token, request)
@@ -365,8 +514,200 @@ def require_admin(request: Request) -> None:
 
 @router.get("/me", response_model=MeResp)
 def me(user: User = Depends(get_current_user)) -> MeResp:
-    """返回当前登录用户（id + email），供前端展示用户名。"""
-    return MeResp(id=user.id, email=user.email)
+    """返回当前登录用户（id + email + email_verified + mfa_enabled）。"""
+    return MeResp(
+        id=user.id,
+        email=user.email,
+        email_verified=bool(user.email_verified),
+        mfa_enabled=bool(user.mfa_enabled),
+    )
+
+
+# ── GAP-002: 이메일 인증 / 비밀번호 재설정 / MFA ───────────────────────────────
+
+
+@router.post("/verify", response_model=StatusResp)
+def verify_email(
+    req: VerifyEmailReq,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """이메일 인증 token 소비 → email_verified=True.
+
+    - token 은 요약 비교. 성공 시 token 즉시 소거(1회용 — 재사용 불가).
+    - 만료(기본 24h 초과)는 400. 평문 token 은 이 시점에도 DB 에 없다.
+    """
+    rate_limit_verify(request.client.host if request.client else "unknown")
+    digest = _hash_token(req.token)
+    user = db.query(User).filter(User.verify_token == digest).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="인증 링크가 유효하지 않거나 이미 사용되었습니다")
+    sent_at = _as_utc(user.verify_sent_at)
+    if sent_at and _now() - sent_at > timedelta(minutes=settings.email_verify_token_expire_minutes):
+        # 만료 token 은 소거해 무한 재시도를 막는다(재발송으로 새 token 을 받아야 함).
+        user.verify_token = None
+        db.commit()
+        raise HTTPException(status_code=400, detail="인증 링크가 만료되었습니다. 재발송해 주세요")
+    user.email_verified = True
+    user.verify_token = None  # 1회용
+    db.commit()
+    return StatusResp(status="verified")
+
+
+@router.post("/resend-verification", response_model=StatusResp)
+def resend_verification(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """인증 메일 재발송. 쿨다운 60초.
+
+    - 이미 인증된 계정 → 400(불필요한 메일 폭주 방지).
+    - 쿨다운 위반 → 429. (여기는 계정이 **확정**된 로그인 사용자라 429 를 써도
+      계정 열거로 이어지지 않는다. /forgot-password 와 다른 이유.)
+    """
+    rate_limit_resend_verification(request.client.host if request.client else "unknown")
+    if user.email_verified:
+        raise HTTPException(status_code=400, detail="이미 인증된 이메일입니다")
+    sent_at = _as_utc(user.verify_sent_at)
+    if sent_at and _now() - sent_at < timedelta(
+        seconds=settings.auth_email_resend_cooldown_seconds
+    ):
+        raise HTTPException(status_code=429, detail="재발송은 잠시 후 다시 시도하세요")
+    _send_verification(user, db)
+    return StatusResp(status="sent")
+
+
+@router.post("/forgot-password", response_model=StatusResp)
+def forgot_password(
+    req: ForgotPasswordReq,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """비밀번호 재설정 메일 요청.
+
+    ⚠ **항상 200** 을 돌려준다 — 계정 존재 여부를 노출하지 않기 위해(계정 열거 방지).
+      · 미가입 이메일도 동일 응답·동일 상태코드.
+      · 쿨다운 위반도 429 가 아니라 200 이다. 429 를 주면 "429 vs 200" 이 곧
+        "가입됨 vs 미가입" 의 오라클이 된다 — 방어를 위해 안내성을 포기한다.
+    ⚠ 메일 채널 미구성으로 503 을 던지지도 않는다(같은 이유로 존재성 오라클이 됨).
+    """
+    rate_limit_forgot_password(request.client.host if request.client else "unknown")
+    user = db.query(User).filter(User.email == req.email).first()
+    if user:
+        sent_at = _as_utc(user.reset_sent_at)
+        in_cooldown = sent_at and _now() - sent_at < timedelta(
+            seconds=settings.auth_email_resend_cooldown_seconds
+        )
+        if not in_cooldown:
+            raw, digest = _issue_token()
+            user.reset_token = digest
+            user.reset_sent_at = _now()
+            db.commit()
+            try:
+                email_service.send_reset_email(
+                    user.email, raw, settings.password_reset_token_expire_minutes
+                )
+            except Exception:  # noqa: BLE001 — 실패해도 존재성을 노출하지 않는다
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "[auth] 재설정 메일 발송 실패 user_id=%s", user.id
+                )
+    return StatusResp(status="sent")
+
+
+@router.post("/reset-password", response_model=StatusResp)
+def reset_password(
+    req: ResetPasswordReq,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """재설정 token 소비 → 비밀번호 변경 + 잠금 해제.
+
+    - token 은 요약 비교, 성공 시 소거(1회용). 만료(기본 30분) → 400.
+    - 성공 시 failed_logins/locked_until 을 **0/None** 으로 초기화한다 —
+      재설정은 본인 확인의 강한 증거이며, 잠긴 사용자가 스스로 복구할 유일한 길이다.
+    """
+    rate_limit_reset_password(request.client.host if request.client else "unknown")
+    if len(req.new_password) < PASSWORD_MIN_LENGTH:
+        raise HTTPException(status_code=400, detail=f"密码至少 {PASSWORD_MIN_LENGTH} 位")
+    digest = _hash_token(req.token)
+    user = db.query(User).filter(User.reset_token == digest).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="재설정 링크가 유효하지 않거나 이미 사용되었습니다")
+    sent_at = _as_utc(user.reset_sent_at)
+    if sent_at and _now() - sent_at > timedelta(
+        minutes=settings.password_reset_token_expire_minutes
+    ):
+        user.reset_token = None
+        db.commit()
+        raise HTTPException(status_code=400, detail="재설정 링크가 만료되었습니다. 다시 요청해 주세요")
+    user.hashed_password = hash_password(req.new_password)
+    user.reset_token = None  # 1회용
+    user.failed_logins = 0  # 재설정 = 본인 확인 → 잠금 해제
+    user.locked_until = None
+    db.commit()
+    return StatusResp(status="password_reset")
+
+
+@router.post("/mfa/setup", response_model=MfaSetupResp)
+def mfa_setup(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """TOTP 바인딩 시작 — secret 발급·저장하되 **mfa_enabled 는 여전히 False**.
+
+    setup(발급) → enable(코드 확인) 2단계로 분리한 이유:
+    secret 발급만으로 활성화하면, 사용자가 QR 스캔에 실패한 순간 자신이 잠긴다
+    (로그인에 OTP 를 요구하는데 앱에는 등록돼 있지 않은 상태).
+    ⚠ secret 은 이 응답에서만 노출 — 이후 어떤 조회 경로도 없다(분실 시 재발급).
+    """
+    secret = totp.generate_secret()
+    user.mfa_secret = secret
+    user.mfa_enabled = False  # 재설정 시에도 비활성 — enable 로만 켜진다
+    db.commit()
+    return MfaSetupResp(
+        secret=secret,
+        otpauth_uri=totp.provisioning_uri(secret, user.email),
+        enabled=False,
+    )
+
+
+@router.post("/mfa/enable", response_model=StatusResp)
+def mfa_enable(
+    req: MfaCodeReq,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """TOTP 코드 검증 통과 시에만 mfa_enabled=True (오등록 자기잠금 방지)."""
+    if not user.mfa_secret:
+        raise HTTPException(status_code=400, detail="먼저 MFA 설정을 시작하세요")
+    if not totp.verify(
+        user.mfa_secret, req.code, valid_window=settings.mfa_totp_valid_window
+    ):
+        raise HTTPException(status_code=400, detail="两步验证码错误")
+    user.mfa_enabled = True
+    db.commit()
+    return StatusResp(status="mfa_enabled")
+
+
+@router.post("/mfa/disable", response_model=StatusResp)
+def mfa_disable(
+    req: MfaDisableReq,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """비밀번호 재확인 후 MFA 해제 + secret 폐기.
+
+    세션 탈취만으로 2차 인증을 **끌 수 있으면** MFA 는 무의미하다 → 비밀번호를 다시 요구한다.
+    """
+    if not verify_password(req.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="비밀번호가 올바르지 않습니다")
+    user.mfa_enabled = False
+    user.mfa_secret = None
+    db.commit()
+    return StatusResp(status="mfa_disabled")
 
 
 class AdminLoginReq(BaseModel):
