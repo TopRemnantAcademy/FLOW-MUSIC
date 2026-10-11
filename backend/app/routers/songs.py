@@ -181,6 +181,29 @@ def _author_names(db: Session, user_ids: list[int]) -> dict[int, str]:
     return out
 
 
+# GAP-010 下载格式白名单。**不含** "stem"——分轨走独立端点 /songs/{id}/stem（GAP-013 能力），
+# 混进下载参数会造成「选了 stem 却拿到整曲」的假功能。
+_AUDIO_FORMATS: dict[str, tuple[str, str, str]] = {
+    # 格式: (Song 列名, 媒体类型, 扩展名)
+    "mp3": ("audio_url", "audio/mpeg", "mp3"),
+    "wav": ("audio_wav_url", "audio/wav", "wav"),
+    "flac": ("audio_flac_url", "audio/flac", "flac"),
+}
+
+
+def _available_formats(song: Song) -> list[str]:
+    """本曲**实际可下载**的格式列表。
+
+    无损链接缺失时不列出对应格式 —— 前端据此禁用选项，避免「能点但拿不到」的假承诺。
+    mp3 是生成必返字段（Mureka 官方 choices[].url），故只要 audio_url 在即可下载。
+    """
+    out = []
+    for fmt, (col, _mt, _ext) in _AUDIO_FORMATS.items():
+        if getattr(song, col, None):
+            out.append(fmt)
+    return out
+
+
 def _to_out(
     song: Song,
     user: Optional[User] = None,
@@ -242,6 +265,8 @@ def _to_out(
         preview_seconds=song.preview_seconds,
         can_play_full=full,
         can_download=can_download(user),
+        audio_format=song.audio_format or "mp3",
+        available_formats=_available_formats(song),
         created_at=song.created_at.isoformat() if song.created_at else "",
     )
 
@@ -358,6 +383,8 @@ def _create_song(req: GenerateReq, user: User, db: Session) -> Song:
         vocal_id=req.vocal_id,
         clip_seconds=req.clip_seconds,
         extend_type=_normalize_extend_type(req.extend_type),
+        # GAP-010 下载格式偏好（非生成参数，见 schemas.GenerateReq.audio_format 注释）
+        audio_format=_normalize_audio_format(getattr(req, "audio_format", None), user),
         content_category=req.content_category or "general",
         engine_name=engine_name,
         cost_cny=cost,
@@ -555,6 +582,12 @@ async def _process_song(song_id: int):
         song.external_id = result.external_id
         song.custom_id = result.custom_id or ""
         song.audio_url = result.audio_url or ""
+        # GAP-010：上游无损链接落库（mureka choices[].wav_url / flac_url）。
+        # 上游无法重取格式（链接 30 天有效且需重轮询），故生成完成时一次性持久化。
+        # getattr 容错：SongResult 之外的对象（老 mock/SimpleNamespace）无这两字段时按空处理，
+        # 不让缺字段把整个收尾流程（后处理/试听/机审）拖进 except 分支。
+        song.audio_wav_url = getattr(result, "wav_url", None) or song.audio_wav_url or ""
+        song.audio_flac_url = getattr(result, "flac_url", None) or song.audio_flac_url or ""
         song.cover_url = result.cover_url or ""
         song.lyric = result.lyric or song.lyric
         song.lyrics_sync = result.lyrics_sync or song.lyrics_sync
@@ -629,6 +662,29 @@ def _require_task_support(task: str, db: Session, category: str | None) -> None:
 # 静默改写会让用户以为「从头部衔接」生效了，实际拿到的是尾部续写 —— 正是 GAP-008/149
 # 禁止的假功能形态。白名单与 mureka.py:_create_extend 的取值保持一致。
 _EXTEND_TYPES = frozenset({"tail", "head"})
+
+
+def _normalize_audio_format(raw: str | None, user: User | None = None) -> str:
+    """校验并归一化下载格式偏好；None/空 → "mp3"（默认）。
+
+    非法值 → 400 fail-closed（**不静默改写为 mp3**）：否则用户以为选了 FLAC、
+    实际拿到 mp3，又是一个「静默假功能」。大小写不敏感（"FLAC" 归一为 "flac"）。
+
+    权益联动：无损格式（wav/flac）需 `can_download`。未订阅者显式请求无损 → **403**
+    （而非静默存下偏好、等下载时才发现）。两层都要拦：这里是「提前告知」，
+    下载端点的 403 才是真正的门（前端可能被绕过，后端不能只依赖前端隐藏选项）。
+    """
+    value = (raw or "").strip().lower()
+    if not value:
+        return "mp3"
+    if value not in _AUDIO_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的音频格式：{raw}（仅支持 mp3 / wav / flac）",
+        )
+    if value != "mp3" and user is not None and not can_download(user):
+        raise HTTPException(status_code=403, detail="无损格式（WAV / FLAC）需订阅后解锁")
+    return value
 
 
 def _normalize_extend_type(raw: str | None) -> str | None:
@@ -984,6 +1040,7 @@ def _new_song_row(
     parent_song_id: int | None = None,
     make_instrumental: bool = False,
     allow_wallet: bool = False,
+    audio_format: str = "mp3",
 ) -> Song:
     """新建 Song + 单位经济核算（成本/价格/毛利），供阶段 2 各新端点复用。
 
@@ -1011,6 +1068,8 @@ def _new_song_row(
         parent_song_id=parent_song_id,
         is_public=False,
         content_category=content_category or "general",
+        # GAP-010 下载格式偏好（非生成参数）
+        audio_format=_normalize_audio_format(audio_format, user),
         engine_name=engine_name,
         cost_cny=cost,
         price_cny=price,
@@ -1125,6 +1184,7 @@ async def create_instrumental(
         content_category=req.content_category,
         make_instrumental=True,
         allow_wallet=req.use_flow_credit,
+        audio_format=req.audio_format,
     )
     bg.add_task(_process_instrumental, song.id, req.prompt, req.model_version, req.n)
     return GenerateResp(song_id=song.id, status=song.status)
@@ -1173,6 +1233,7 @@ async def create_easy(
         model_version=req.model_version or "",
         content_category=req.content_category,
         allow_wallet=req.use_flow_credit,
+        audio_format=req.audio_format,
     )
     bg.add_task(
         _process_easy, song.id, req.prompt, cleaned or None, req.model_version, req.n, req.vocal_id
@@ -1778,14 +1839,23 @@ def play_song(
 @router.get("/{song_id}/download")
 def download_song(
     song_id: int,
+    format: Optional[str] = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """订阅者下载完整音频；未订阅 403。
+    """订阅者下载完整音频；未订阅 403。支持 `?format=mp3|wav|flac`（GAP-010）。
 
     S3 公开 URL 直接重定向无法设置 Content-Disposition（浏览器会「播放」而非「下载」），
     故后端取回临时文件后以 attachment 下发（代价：占用本机带宽，MVP 可接受）。
     ⚠ 这里给的是**完整音频**；未订阅者在 `_to_out` 侧连试听片段以外的链接都拿不到。
+
+    **格式语义（GAP-010 实证约束）**：Mureka 生成入参**没有**格式/码率控制字段，
+    但响应 choices[] 同时回传 url(mp3)/wav_url/flac_url。故本端点只在**上游已返回的三种
+    链接之间路由**——不转码、不承诺「mp3 320」这类上游给不出的质量。
+    · 未指定 format → 用曲目记录的 audio_format（默认 mp3），保持既有行为。
+    · 指定了该曲**没有**的无损链接 → **409**（该曲无此格式），而非静默降级丢给 mp3：
+      静默降级会让用户以为「下载到 FLAC」实际拿到 mp3，正是本项目禁止的假功能。
+      前端可先读 SongOut.available_formats 预判，不会踩到。
     """
     from fastapi.responses import FileResponse
 
@@ -1796,14 +1866,27 @@ def download_song(
         raise HTTPException(status_code=404, detail="歌曲不存在")
     if not can_download(user):
         raise HTTPException(status_code=403, detail="订阅后可下载完整音频")
-    if not song.audio_url:
-        raise HTTPException(status_code=404, detail="音频不可用")
+
+    fmt = (format or song.audio_format or "mp3").strip().lower()
+    if fmt not in _AUDIO_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的格式：{format}（仅支持 mp3 / wav / flac）",
+        )
+    col, media_type, ext = _AUDIO_FORMATS[fmt]
+    source = getattr(song, col, None)
+    if not source:
+        # 该曲无此格式（多为上游未返无损链接，或老数据迁移前生成）。
+        raise HTTPException(
+            status_code=409,
+            detail=f"该曲目没有 {fmt.upper()} 版本（可用格式：{', '.join(_available_formats(song)) or '无'}）",
+        )
     try:
-        local = download_to_temp(song.audio_url)
+        local = download_to_temp(source)
     except Exception as e:
         raise HTTPException(status_code=502, detail="音频下载失败") from e
-    filename = f"{(song.title or '').strip() or 'song'}.mp3"
-    return FileResponse(local, media_type="audio/mpeg", filename=filename)
+    filename = f"{(song.title or '').strip() or 'song'}.{ext}"
+    return FileResponse(local, media_type=media_type, filename=filename)
 
 
 @router.get("/{song_id}/preview")

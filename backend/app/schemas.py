@@ -104,6 +104,11 @@ class GenerateReq(BaseModel):
     )
     # 音色克隆 ID（Mureka /v1/vocal/clone 产出）。⚠️ mureka-o2 不支持，后端会自动剔除并 log。
     vocal_id: Optional[str] = None
+    # GAP-010 下载格式偏好（mp3|wav|flac）。⚠️ **不是生成质量参数**：
+    # Mureka 生成入参无格式/码率控制（官方 spec 实证，见 orchestrator/mureka.py 头部），
+    # 上游响应同时回传三种链接，本字段只是「下载时默认取哪种」的偏好。
+    # 非白名单值由路由层 400 fail-closed（见 songs.py::_normalize_audio_format）。
+    audio_format: Optional[str] = None
     # P1 显式扣费同意：超额时是否用 FLOW credit 按次支付。
     # ⚠️ 必须用户主动勾选才为 True —— 未经同意自动扣款属业务逻辑缺陷 + 合规风险
     # （消费者知情同意 / CWE-840 Business Logic Errors）。默认 False = 超额一律 402。
@@ -186,6 +191,7 @@ class EasyGenerateReq(BaseModel):
     is_public: Optional[bool] = False
     content_category: Optional[str] = None
     vocal_id: Optional[str] = None  # 音色克隆（mureka-o2 不支持）
+    audio_format: Optional[str] = None  # GAP-010 下载格式偏好（mp3|wav|flac，非生成参数）
     use_flow_credit: bool = False  # P1 显式扣费同意（见 GenerateReq 注释）
 
 
@@ -200,6 +206,7 @@ class InstrumentalReq(BaseModel):
     title: Optional[str] = None
     is_public: Optional[bool] = False
     content_category: Optional[str] = None
+    audio_format: Optional[str] = None  # GAP-010 下载格式偏好（mp3|wav|flac，非生成参数）
     use_flow_credit: bool = False  # P1 显式扣费同意（见 GenerateReq 注释）
 
 
@@ -269,6 +276,11 @@ class SongOut(BaseModel):
     preview_seconds: Optional[int] = None  # 试听片段时长（秒）
     can_play_full: bool = False  # 是否可播放完整版（= 已订阅）
     can_download: bool = False  # 是否可下载完整音频（= 已订阅）
+    # ---- GAP-010 音频格式（下载侧可选；仅订阅者可见无损链接）----
+    audio_format: str = "mp3"  # 下载格式 mp3|wav|flac
+    # 该曲**实际可用**的下载格式列表（上游返了 flac_url/wav_url 才有 wav/flac）。
+    # 前端据此禁用「无损」选项，避免点了才发现 402/缺失（不撒谎的能力声明）。
+    available_formats: list[str] = []
     created_at: str
 
 

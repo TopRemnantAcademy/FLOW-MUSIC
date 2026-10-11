@@ -50,6 +50,11 @@ class SongResult(BaseModel):
     custom_id: str | None = None  # 供应商歌曲 id（续写/翻唱基准，open.suno.cn 为 UUID）
     status: str = "pending"  # pending | processing | completed | failed
     audio_url: str | None = None
+    # 无损音频上游链接（Mureka choices[].wav_url / flac_url 实证存在）。
+    # mp3 之外格式**只在下载侧可选**：Mureka 生成入参无格式/码率控制（见 mureka.py 文档头），
+    # 上游直接同时回传三种格式的链接，故落库即可，无需二次转码。
+    wav_url: str | None = None
+    flac_url: str | None = None
     cover_url: str | None = None
     lyric: str | None = None
     title: str | None = None

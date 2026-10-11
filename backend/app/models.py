@@ -83,6 +83,16 @@ class Song(Base):
     # 仅详情接口按需曝光；列表/广场接口不返回以控制包体（每首 100~300 字歌词 → ~10KB JSON）。
     lyrics_sync = Column(Text, nullable=True)
     audio_cdn_url = Column(Text, default="")  # 回源到 CDN 后的稳定链接（供 APK 播放）
+    # ---- GAP-010 音频格式（下载侧可选）----
+    # ⚠️ Mureka 生成入参无格式/码率字段（官方 OpenAPI spec 实证，见 orchestrator/mureka.py 头部），
+    # 故这里**不存**「用户点选的质量参数」而是存「下载时选定的格式」：
+    # 上游 choices[] 已同时回传 url(mp3)/flac_url/wav_url，本产品只在其间路由。
+    # 不设 quality_kbps：上游无法按码率出音频，存了就是臆造字段。
+    audio_format = Column(
+        String(8), default="mp3", server_default="mp3", nullable=False
+    )  # 下载格式 mp3|wav|flac（默认 mp3）
+    audio_wav_url = Column(Text, default="")  # 上游无损 WAV 链接（choices[].wav_url）
+    audio_flac_url = Column(Text, default="")  # 上游无损 FLAC 链接（choices[].flac_url）
     preview_audio_url = Column(Text, default="")  # 试听片段（前 N 秒）；未订阅者只能拿到这个链接
     preview_seconds = Column(Integer, nullable=True)  # 试听片段时长（秒）；空=未生成片段
     make_instrumental = Column(Boolean, default=False)

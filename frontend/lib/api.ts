@@ -40,6 +40,9 @@ export type SongView = {
   preview_seconds?: number | null;
   can_play_full?: boolean;   // 订阅后可播放完整版
   can_download?: boolean;    // 订阅后可下载完整音频
+  // GAP-010 音频格式（**下载侧**可选；Mureka 生成入参无格式控制，见后端 mureka.py 头部）。
+  audio_format?: string;            // 下载格式偏好 mp3|wav|flac
+  available_formats?: string[];     // 本曲实际可下载的格式（无损链接缺失时不列出）
   // ── 广场互动（2026-09-10）：无文本互动，不做留言/评论 ──
   like_count?: number;
   favorite_count?: number;
@@ -400,12 +403,16 @@ export const api = {
       throw e;
     }
   },
-  downloadSong: async (id: number) => {
+  downloadSong: async (id: number, format?: string) => {
     // 订阅者下载完整音频。必须带认证，故不能用 <a href> 直连；
     // 取 blob 后用本地 URL 触发下载，文件名由后端 Content-Disposition 决定。
     // [SEC] 2026-09-13：认证由 flow_auth HttpOnly cookie 自动携带（credentials: include），
     // 不再手动注入 Authorization（localStorage 令牌已废弃）。
-    const res = await fetch(`${API_BASE}/api/songs/${id}/download`, { credentials: "include" });
+    // GAP-010：format=mp3|wav|flac 由后端路由到对应上游链接；缺该格式则 409（不静默降级）。
+    const qs = format ? `?format=${encodeURIComponent(format)}` : "";
+    const res = await fetch(`${API_BASE}/api/songs/${id}/download${qs}`, {
+      credentials: "include",
+    });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new ApiError((err as any).detail || "下载失败", res.status);
@@ -456,7 +463,12 @@ export const api = {
     }),
   // ── 阶段 2：Mureka 新增能力（后端 2026-09-12 接通，端点规格见 PLAN_H5_AND_MUREKA_GAPS.md B.5.3）──
   // 引擎未实现时后端统一 501，前端应把它当「该功能暂不可用」处理，不要降级成静默成功。
-  instrumental: (body: { prompt: string; title?: string; model_version?: string }) =>
+  instrumental: (body: {
+    prompt: string;
+    title?: string;
+    model_version?: string;
+    audio_format?: string; // GAP-010 下载格式偏好（非生成参数）
+  }) =>
     request<{ song_id: number; status: string }>("/api/songs/instrumental", {
       method: "POST",
       body: JSON.stringify(body),
@@ -467,6 +479,7 @@ export const api = {
     title?: string;
     model_version?: string;
     vocal_id?: string; // 克隆音色（mureka-o2 后端会自动剔除）
+    audio_format?: string; // GAP-010 下载格式偏好（非生成参数）
   }) =>
     request<{ song_id: number; status: string }>("/api/songs/easy-generate", {
       method: "POST",

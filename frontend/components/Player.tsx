@@ -62,6 +62,9 @@ export default function Player({
   // 在 UI 上完全不存在（GAP-149 的「假功能」形态）。mureka-8 下该字段必填。
   const [extendType, setExtendType] = useState<"tail" | "head">("tail");
   const [downloading, setDownloading] = useState(false);
+  // GAP-010：下载格式。曲目自带偏好（audio_format）+ 实际可用格式（available_formats）。
+  // 无损缺失时不列出对应选项，避免「选了才 409」。
+  const [downloadFormat, setDownloadFormat] = useState<string>("mp3");
   const [publishing, setPublishing] = useState(false);
   const [playing, setPlaying] = useState(false);
   // 需鉴权的试听端点（对象存储未配置时的回退）→ 取 blob 再播。
@@ -80,6 +83,11 @@ export default function Player({
   useEffect(() => {
     setLocal(song);
   }, [song]);
+
+  // GAP-010：曲目切换时把下载格式同步为曲目偏好（后端 audio_format，默认 mp3）。
+  useEffect(() => {
+    setDownloadFormat(song.audio_format || "mp3");
+  }, [song.audio_format, song.id]);
 
   useEffect(() => {
     return () => {
@@ -263,15 +271,27 @@ export default function Player({
     setDownloading(true);
     setMsg("");
     try {
-      await api.downloadSong(local.id);
-      setMsg("已开始下载完整音频");
+      await api.downloadSong(local.id, downloadFormat);
+      setMsg(`已开始下载完整音频（${downloadFormat.toUpperCase()}）`);
     } catch (e: any) {
       if (e?.status === 403) setMsg("订阅后可下载完整音频");
+      else if (e?.status === 409) setMsg(e?.message || "该曲目没有所选格式");
       else setMsg(e?.message || "下载失败");
     } finally {
       setDownloading(false);
     }
   }
+
+  // 可用下载格式：优先用后端 available_formats（如实反映上游是否返了无损链接），
+  // 缺字段时退化为仅 mp3（保守，不撒谎）。
+  const dlFormats: string[] =
+    local.available_formats && local.available_formats.length
+      ? local.available_formats
+      : ["mp3"];
+  // 用户偏好无效（例如偏好 flac 但本曲无 flac）时回落到 mp3，避免点了才 409。
+  const activeDlFormat = dlFormats.includes(downloadFormat)
+    ? downloadFormat
+    : (dlFormats[0] ?? "mp3");
 
   // 发布**后置**：只有生成完成 + 审核通过的作品才允许公开到广场。
   // 后端 PATCH /api/songs/{id} 同样强制该约束（未完成时返回 400 并说明当前状态）。
@@ -483,13 +503,33 @@ export default function Player({
               {spawning === "remix" ? "混音中…" : "混音"}
             </button>
             {local.can_download && (
-              <button
-                onClick={handleDownload}
-                disabled={downloading}
-                className="btn btn-secondary btn-sm"
-              >
-                {downloading ? "下载中…" : "下载完整版"}
-              </button>
+              <div className="flex items-center gap-1">
+                {/* GAP-010：多格式时给选择器；仅 mp3 时不必徒增控件 */}
+                {dlFormats.length > 1 && (
+                  <select
+                    value={activeDlFormat}
+                    onChange={(e) => setDownloadFormat(e.target.value)}
+                    disabled={downloading}
+                    className="input max-w-[6.5rem]"
+                    title="选择下载格式（无损为订阅权益）"
+                  >
+                    {dlFormats.map((f) => (
+                      <option key={f} value={f}>
+                        {f.toUpperCase()}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  onClick={handleDownload}
+                  disabled={downloading}
+                  className="btn btn-secondary btn-sm"
+                >
+                  {downloading
+                    ? "下载中…"
+                    : `下载完整版${dlFormats.length > 1 ? `（${activeDlFormat.toUpperCase()}）` : ""}`}
+                </button>
+              </div>
             )}
           </>
         )}

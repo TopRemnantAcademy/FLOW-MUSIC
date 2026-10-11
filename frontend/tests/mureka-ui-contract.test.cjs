@@ -216,6 +216,35 @@ check("后端 UploadResp 是 custom_id 单字段", /class UploadResp[\s\S]{0,80}
 check("auth.tsx login/logout 广播 auth:changed（收藏视图登录自动恢复依赖）",
   /auth:changed/.test(authTsx) && (authTsx.match(/auth:changed/g) || []).length >= 2);
 
+// ── GAP-010 音频格式（下载侧可选）契约 ─────────────────────────────────────
+section("GAP-010 音频格式 / 下载格式契约");
+
+// 后端：三列存在，且不得出现臆造的 quality/bitrate 列（Mureka 生成入参无码率控制）
+check("models.py Song 有 audio_format 列", /audio_format = Column/.test(modelsPy));
+check("models.py Song 有 audio_wav_url 列", /audio_wav_url = Column/.test(modelsPy));
+check("models.py Song 有 audio_flac_url 列", /audio_flac_url = Column/.test(modelsPy));
+check("models.py 无臆造质量列（quality/bitrate/kbps）",
+  !/Column\([^)]*(quality|bitrate|kbps)/i.test(modelsPy));
+
+// 后端：下载端点支持 ?format= 且白名单 = mp3|wav|flac
+check("songs.py 下载端点接受 format 参数", /def download_song\([\s\S]{0,120}format/.test(songs));
+check("songs.py 格式白名单含 mp3/wav/flac（且不含 stem）",
+  /_AUDIO_FORMATS[\s\S]{0,300}"mp3"[\s\S]{0,300}"wav"[\s\S]{0,300}"flac"/.test(songs));
+check("songs.py 无损缺失返回 409（不静默降级）", /status_code=409/.test(songs));
+check("songs.py 生成请求体不夹带 format（上游不支持）",
+  !/payload\["(format|quality|bitrate)"\]/.test(mureka));
+
+// 前端：api 与 UI 接线
+check("api.ts downloadSong 接受 format 参数", /downloadSong: async \(id: number, format\?/.test(apiTs));
+check("api.ts downloadSong 拼接 ?format=", apiTs.includes("/download${qs}"));
+check("SongView 含 audio_format", /audio_format\?: string/.test(apiTs));
+check("SongView 含 available_formats", /available_formats\?: string\[\]/.test(apiTs));
+check("CreateForm 有下载格式控件（AUDIO_FORMATS）", /AUDIO_FORMATS/.test(createTsx));
+check("CreateForm 无损受权益约束（canDownload 禁用）", /locked = f\.lossless && !canDownload/.test(createTsx));
+check("CreateForm 提交携带 audio_format", /audio_format: audioFormat/.test(createTsx));
+check("Player 下载按钮按格式调用 api.downloadSong(id, format)",
+  /api\.downloadSong\(local\.id, downloadFormat\)/.test(playerTsx));
+
 // ── 汇总 ─────────────────────────────────────────────────────────────────
 console.log(`\n${"=".repeat(56)}`);
 console.log(`PASS=${pass}  FAIL=${fail}`);

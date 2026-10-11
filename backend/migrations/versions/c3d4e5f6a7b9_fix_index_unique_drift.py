@@ -1,6 +1,6 @@
 """fix index/unique drift: payment_orders & subscriptions (model ↔ migration 对齐)
 
-Revision ID: c3d4e5f6a7b8
+Revision ID: c3d4e5f6a7b9
 Revises: b9c1d2e3f4a5
 Create Date: 2026-10-11 13:00:00.000000
 
@@ -51,7 +51,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "c3d4e5f6a7b8"
+revision: str = "c3d4e5f6a7b9"
 down_revision: Union[str, Sequence[str], None] = "b9c1d2e3f4a5"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

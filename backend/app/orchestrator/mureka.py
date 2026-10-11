@@ -15,6 +15,13 @@
   经核对 generate/query/easy-generate/extend/remix/region-edit/vocal-clone/stem/instrumental
   共 9 个文档，全部仅标 "object[]" 而**不展开** → 官方文档处处未公开子字段名，
   只能靠**账号充值后实机成功调用**校准。本文件以多候选键容错解析（见 get()）。
+- [GAP-010 音频格式实证，2026-10-11] generate **入参无格式/码率/时长控制字段**：
+  逐字核对官方 OpenAPI spec 的 SongGenerateReq 属性仅
+  lyrics/model/n/prompt/gender/reference_id/vocal_id/melody_id/stream（无 quality/format/
+  bitrate/duration/kbps），全站 spec 中 "bitrate"/"quality" 出现 0 次。故「mp3 320」等
+  **生成侧质量选择不存在**，本产品一律按「**仅下载侧可选**」实现：响应 choices[] 同时回传
+  url(mp3) / flac_url / wav_url 三种链接，落库后由下载端点按用户所选格式回源。
+  ⚠️ 不臆造 quality_kbps 列——上游无法按其出音频，存了也只是假字段。
 - 风格控制：generate 的 `prompt` 是**自由文本**（≤1024），本封装**原样透传**用户填写的
   style / vocal_gender / prompt，**不做任何曲风注入**（2026-09-10 起）。
   ⚠️ 2026-09-10 이전엔 모든 요청에 "gospel" 을 강제 선두 주입했으나,
@@ -480,6 +487,11 @@ class MurekaProvider(MusicProvider):
         # · url 是 mp3 链接（实测 960,723 字节），后两位容错键是历史兜底。
         # · flac_url/wav_url 是无损格式；当前播放链路只用 url，但保留后向兼容。
         audio_url = choice.get("audio_url") or choice.get("url") or choice.get("mp3_url")
+        # 无损格式链接：官方 post-v1-song-generate 响应 choices[] 实证字段
+        # （flac_url / wav_url，"lossless FLAC/WAV audio format, valid for 30 days"）。
+        # 生成**入参**无格式/码率控制，故这是「下载侧可选」的数据来源（GAP-010）。
+        wav_url = choice.get("wav_url")
+        flac_url = choice.get("flac_url")
         cover_url = choice.get("cover_url") or choice.get("image_url") or choice.get("cover")
         # lyrics_sections 是逐字时间轴（section→line→word 三级，每级 start/end ms + text），
         # 是 synced lyrics 功能的现成数据源。优先用 choices[].lyrics 兜底（无时间轴纯文本）。
@@ -505,6 +517,8 @@ class MurekaProvider(MusicProvider):
             custom_id=str(custom_id) if custom_id else None,
             status="completed",
             audio_url=audio_url,
+            wav_url=wav_url,
+            flac_url=flac_url,
             cover_url=cover_url,
             lyric=lyric,
             lyrics_sync=lyrics_sync,

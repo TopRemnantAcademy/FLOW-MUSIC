@@ -104,6 +104,16 @@ const MODES: { key: "normal" | "instrumental" | "easy"; label: string }[] = [
   { key: "easy", label: "灵感创作" },
 ];
 
+// GAP-010 下载格式（**下载侧**可选）。
+// ⚠️ Mureka 生成入参无格式/码率控制（官方 spec 实证，见后端 orchestrator/mureka.py 头部），
+// 上游响应同时回传 mp3/wav/flac 三种链接 → 本控件选择的是「下载时取哪种」，不是「生成质量」。
+// 无损（wav/flac）需订阅（后端 can_download；未订阅选了会被 403）。
+const AUDIO_FORMATS: { key: string; label: string; lossless: boolean }[] = [
+  { key: "mp3", label: "MP3", lossless: false },
+  { key: "wav", label: "WAV 无损", lossless: true },
+  { key: "flac", label: "FLAC 无损", lossless: true },
+];
+
 // 灵感：一键填充整套参数（降低"空白页恐惧"）
 const INSPIRATIONS: { name: string; style: string; prompt: string }[] = [
   { name: "清晨敬拜", style: "福音，慢速，钢琴，女声", prompt: "清晨的微光里，安静地献上感谢" },
@@ -138,6 +148,9 @@ export default function CreateForm() {
   const [vocalCloneError, setVocalCloneError] = useState("");
   const [easyStyles, setEasyStyles] = useState<string[]>([]); // 灵感创作：官方风格枚举（中文标签）
 
+  // GAP-010：下载格式偏好 + 订阅权益（决定无损是否可选）。
+  const [audioFormat, setAudioFormat] = useState("mp3");
+  const [canDownload, setCanDownload] = useState(false);
   const [song, setSong] = useState<SongView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -169,6 +182,7 @@ export default function CreateForm() {
       if (d.vocal) setVocal(d.vocal);
       if (d.mode === "instrumental" || d.mode === "easy") setMode(d.mode);
       if (Array.isArray(d.easyStyles)) setEasyStyles(d.easyStyles);
+      if (typeof d.audioFormat === "string") setAudioFormat(d.audioFormat);
       if (d.style || d.prompt || d.lyric || d.title) setDraftRestored(true);
     } catch {
       localStorage.removeItem(DRAFT_KEY);
@@ -181,11 +195,11 @@ export default function CreateForm() {
     const t = setTimeout(() => {
       localStorage.setItem(
         DRAFT_KEY,
-        JSON.stringify({ style, prompt, lyric, title, vocal, mode, easyStyles }),
+        JSON.stringify({ style, prompt, lyric, title, vocal, mode, easyStyles, audioFormat }),
       );
     }, 500);
     return () => clearTimeout(t);
-  }, [style, prompt, lyric, title, vocal, instrumental, loading, song]);
+  }, [style, prompt, lyric, title, vocal, instrumental, loading, song, audioFormat]);
 
   function clearDraft() {
     localStorage.removeItem(DRAFT_KEY);
@@ -197,6 +211,27 @@ export default function CreateForm() {
       canceledRef.current = true;
     };
   }, []);
+
+  // GAP-010：订阅权益（无损格式解锁条件）。登录态/订阅变更时刷新。
+  // 未登录 → 默认不可下载（fail-closed，与后端 403 一致）。
+  useEffect(() => {
+    let alive = true;
+    if (!isAuthed) {
+      setCanDownload(false);
+      return;
+    }
+    api
+      .meBilling()
+      .then((b) => {
+        if (alive) setCanDownload(!!b.tier_key && b.tier_key !== "free");
+      })
+      .catch(() => {
+        if (alive) setCanDownload(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [isAuthed]);
 
   // ── 生成计时 ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -411,6 +446,7 @@ export default function CreateForm() {
     setVocal("");
     setMode("normal");
     setEasyStyles([]);
+    setAudioFormat("mp3");
     setVocalId("");
     setVocalCloneError("");
     setSong(null);
@@ -455,7 +491,11 @@ export default function CreateForm() {
           setError("请填写描述（纯器乐也需要主题 / 情绪描述）");
           return;
         }
-        const r = await api.instrumental({ prompt: prompt.trim(), title: title.trim() || undefined });
+        const r = await api.instrumental({
+          prompt: prompt.trim(),
+          title: title.trim() || undefined,
+          audio_format: audioFormat,
+        });
         songId = r.song_id;
       } else if (mode === "easy") {
         // 灵感创作：Prompt to Song，无歌词；可叠加官方风格枚举 + 克隆音色。
@@ -470,6 +510,7 @@ export default function CreateForm() {
           styles: stylesEn.length ? stylesEn : undefined,
           title: title.trim() || undefined,
           vocal_id: vocalId || undefined,
+          audio_format: audioFormat,
         });
         songId = r.song_id;
       } else {
@@ -502,6 +543,8 @@ export default function CreateForm() {
           title: title.trim() || undefined,
           vocal_gender: vocal || undefined,
           make_instrumental: false,
+          // GAP-010：下载格式偏好（无损需订阅；未订阅传无损被后端 403 —— 前端已禁用选项）
+          audio_format: audioFormat,
           vocal_id: vocalId || undefined, // 音色克隆（mureka-o2 后端自动剔除并 log）
           // is_public 不在创建时提交 —— 发布已后置到播放器上的「发布到广场」
         });
@@ -833,31 +876,72 @@ export default function CreateForm() {
             onClick={() => setShowAdvanced((v) => !v)}
             className="text-xs text-[var(--muted)] underline hover:text-[var(--ink)]"
           >
-            {showAdvanced ? "收起高级选项" : "展开高级选项（人声）"}
+            {showAdvanced ? "收起高级选项" : "展开高级选项（人声 / 下载格式）"}
           </button>
           {showAdvanced && (
-            <div className="mt-2 flex flex-wrap items-center gap-3 rounded-lg bg-[var(--surface-2)] p-3 text-sm">
-              {mode === "normal" && (
-                <label className="flex items-center gap-2">
-                  <span className="text-[var(--muted)]">音色</span>
-                  <select
-                    value={vocal}
-                    onChange={(e) => changeVocal(e.target.value)}
-                    className="input max-w-[8rem]"
-                  >
-                    <option value="">不限</option>
-                    <option value="male">男声</option>
-                    <option value="female">女声</option>
-                  </select>
-                </label>
-              )}
-              <span className="text-xs text-[var(--muted)]">
-                {mode === "normal"
-                  ? "音色会同步写入风格标签，避免相互矛盾"
-                  : mode === "easy"
-                    ? "灵感创作仅支持克隆音色（人声性别不适用）"
-                    : "纯器乐无人声"}
-              </span>
+            <div className="mt-2 space-y-3 rounded-lg bg-[var(--surface-2)] p-3 text-sm">
+              <div className="flex flex-wrap items-center gap-3">
+                {mode === "normal" && (
+                  <label className="flex items-center gap-2">
+                    <span className="text-[var(--muted)]">音色</span>
+                    <select
+                      value={vocal}
+                      onChange={(e) => changeVocal(e.target.value)}
+                      className="input max-w-[8rem]"
+                    >
+                      <option value="">不限</option>
+                      <option value="male">男声</option>
+                      <option value="female">女声</option>
+                    </select>
+                  </label>
+                )}
+                <span className="text-xs text-[var(--muted)]">
+                  {mode === "normal"
+                    ? "音色会同步写入风格标签，避免相互矛盾"
+                    : mode === "easy"
+                      ? "灵感创作仅支持克隆音色（人声性别不适用）"
+                      : "纯器乐无人声"}
+                </span>
+              </div>
+
+              {/* GAP-010 下载格式：无损受订阅权益约束 */}
+              <div>
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <span className="text-[var(--muted)]">下载格式</span>
+                  <div className="flex gap-1">
+                    {AUDIO_FORMATS.map((f) => {
+                      const locked = f.lossless && !canDownload;
+                      const on = audioFormat === f.key;
+                      return (
+                        <button
+                          key={f.key}
+                          type="button"
+                          disabled={locked}
+                          onClick={() => setAudioFormat(f.key)}
+                          title={
+                            locked
+                              ? "无损格式（WAV / FLAC）需订阅后解锁"
+                              : `下载时默认取 ${f.label}`
+                          }
+                          className={`chip rounded-full px-2.5 py-0.5 text-xs ${
+                            locked ? "cursor-not-allowed opacity-50" : ""
+                          }`}
+                          data-on={on}
+                        >
+                          {f.label}
+                          {locked && " 🔒"}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <p className="text-[11px] text-[var(--muted)]">
+                  格式在<strong>下载时</strong>生效：上游同时提供 MP3 / WAV / FLAC，
+                  {canDownload
+                    ? "你可任选（无损为订阅权益）。"
+                    : "无损（WAV / FLAC）需订阅后解锁；免费档下载 MP3。"}
+                </p>
+              </div>
             </div>
           )}
         </div>
