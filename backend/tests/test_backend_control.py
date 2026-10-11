@@ -18,6 +18,7 @@ from app.orchestrator.selection import (
     list_routing,
     list_tiers,
 )
+from app.orchestrator import client as client_mod
 from app.orchestrator.client import get_orchestrator, set_orchestrator
 from app.orchestrator.mock import MockProvider
 
@@ -256,12 +257,17 @@ def test_dashboard_cost_and_seed(client):
 
 
 def test_generate_with_unimplemented_engine_raises_clear_error():
+    # 反例必须用「真正未注册」的引擎名：ace_step_private 已接入实现，不再是未接入样本。
+    unregistered = "nonexistent_engine_xyz"
+    assert unregistered not in client_mod._PROVIDER_CLASSES, (
+        f"{unregistered} 已被注册，反例失效，请换一个未注册引擎名"
+    )
     # 清除测试注入的 mock 覆盖，才能走到「未接入引擎」的报错分支
     set_orchestrator(None)
     try:
         with pytest.raises(ValueError) as exc:
-            get_orchestrator("ace_step_private")
-        assert "ace_step_private" in str(exc.value)
+            get_orchestrator(unregistered)
+        assert unregistered in str(exc.value)
     finally:
         set_orchestrator(MockProvider())  # 还原 conftest 注入，避免影响其它测试
 

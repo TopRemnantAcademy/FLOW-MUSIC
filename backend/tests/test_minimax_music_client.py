@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import json
 import time
 
 import httpx
@@ -328,4 +329,8 @@ def test_generate_success_path_returns_result():
     req = captured[0]
     assert req.headers["authorization"] == "Bearer test-key"
     assert req.url.path == "/v1/music_generation"
-    assert b'"model":"music-3.0"' in req.content
+    # 解析 JSON 比较语义，不锁死分隔符字面量（json.dumps 的空格与否是实现细节）
+    sent = json.loads(req.content)
+    assert sent["model"] == "music-3.0"
+    assert sent["prompt"] == "worship"
+    assert sent["lyrics"] == "[Verse]\nline"
