@@ -19,7 +19,11 @@ from app.orchestrator.selection import (
     list_tiers,
 )
 from app.orchestrator import client as client_mod
-from app.orchestrator.client import get_orchestrator, set_orchestrator
+from app.orchestrator.client import (
+    _PROVIDER_CLASSES,
+    get_orchestrator,
+    set_orchestrator,
+)
 from app.orchestrator.mock import MockProvider
 
 
@@ -265,6 +269,14 @@ def test_generate_with_unimplemented_engine_raises_clear_error():
     # 清除测试注入的 mock 覆盖，才能走到「未接入引擎」的报错分支
     set_orchestrator(None)
     try:
+        # ⚠ 必须用**未接入**的引擎名。原用例用 ace_step_private，但
+        # app/orchestrator/ace_step.py 已实现并于 client.py:_PROVIDER_CLASSES 注册，
+        # 该名字不再是「已注册未接入」→ 用例前提失效（恒失败）。
+        # 这里改用一个确定未注册的名字，并显式断言它不在注册表中，避免将来同样静默腐化。
+        unimplemented = "not_yet_wired_engine"
+        assert unimplemented not in _PROVIDER_CLASSES, (
+            f"{unimplemented} 已被实现/注册，请改用另一个未接入的引擎名"
+        )
         with pytest.raises(ValueError) as exc:
             get_orchestrator(unregistered)
         assert unregistered in str(exc.value)

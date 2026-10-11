@@ -7,6 +7,7 @@ import hmac
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -27,6 +28,7 @@ from app.ratelimit import (
     rate_limit_verify,
 )
 from app.entitlements import resolve_limits, VALID_TIERS
+from app import oauth
 from app.schemas import (
     FlowExchangeReq,
     FlowExchangeResp,
@@ -884,3 +886,75 @@ def flow_exchange(
         expires_minutes=settings.flow_exchange_token_expire_minutes,
     )
     return FlowExchangeResp(access_token=token)
+
+
+# ── [GAP-003] OAuth 授权码登录（Google / Kakao / Naver）─────────────────────────
+# 与上方 `POST /api/auth/google`（GIS **ID 令牌**直传腿）并存，两条腿互不影响：
+#   · /google            —— 前端用 Google JS SDK 拿 ID 令牌 POST（已有，保留兼容）
+#   · /oauth/{p}/login   —— 标准**授权码** 302 回跳腿（本组，三家统一）
+# 令牌一律只走 HttpOnly cookie（_set_auth_cookie），URL 里绝不带令牌。
+
+
+@router.get("/oauth/providers")
+def oauth_providers():
+    """公开端点：前端据此决定显示哪些 OAuth 按钮（未配置凭据的不展示）。"""
+    return {
+        "providers": {
+            name: {"enabled": p.enabled, "authorize_url": p.authorize_url}
+            for name, p in oauth.all_providers().items()
+        }
+    }
+
+
+@router.get("/oauth/{provider}/login")
+def oauth_login(provider: str):
+    """发起登录：签发 state 票据 → 302 到 provider 授权页。
+
+    失败不返回 500/4xx，而是 302 回前端 `?oauth=0&reason=...`：
+    这是浏览器直接导航的端点，返回 JSON 错误页对用户体验等同于「白屏」；
+    且 302 让「provider 名写错 / 未配置」与「用户拒绝授权」在 UI 上走同一分支。
+    """
+    try:
+        url = oauth.start_oauth(provider)
+    except ValueError as exc:
+        reason = "unknown_provider" if "未知" in str(exc) else "provider_disabled"
+        return RedirectResponse(oauth.oauth_callback_redirect(False, reason), status_code=302)
+    return RedirectResponse(url, status_code=302)
+
+
+@router.get("/oauth/{provider}/callback")
+def oauth_callback(
+    provider: str,
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """授权码回调：校验 state → 换令牌 → 决定账号 → **302 回前端**。
+
+    无论成功失败都是 302（`?oauth=1` / `?oauth=0&reason=...`），不向浏览器回 JSON：
+    这是用户从 provider 授权页被弹回来的落地请求，必须继续导航到前端。
+
+    令牌只经 `_set_auth_cookie`（HttpOnly+SameSite）下发，**绝不**出现在 Location 里
+    ——URL 会进浏览器历史、Referer、代理日志，等同公开泄露会话。
+    """
+    # provider 侧直接回 error（用户点了拒绝 / 应用被停用）→ 无 code 可换，早退。
+    # 注意：`error` 参数存在时**仍需**校验 state（若有），否则可被构造为免 state 的回调。
+    if error:
+        return RedirectResponse(oauth.oauth_callback_redirect(False, "missing_code"), status_code=302)
+
+    if not code:
+        return RedirectResponse(oauth.oauth_callback_redirect(False, "missing_code"), status_code=302)
+
+    try:
+        # FastAPI 的 response 注入只有显式声明才可用；此端点必须自建 Response,
+        # 因为要「先设 cookie 再 302」——两者必须是同一个响应对象。
+        user = oauth.complete_oauth(db, provider, code, state or "")
+    except oauth.OAuthLoginError as exc:
+        return RedirectResponse(oauth.oauth_callback_redirect(False, exc.reason), status_code=302)
+
+    resp = RedirectResponse(oauth.oauth_callback_redirect(True), status_code=302)
+    # 会话令牌只写进 HttpOnly cookie（与邮箱登录同一条腿，语义完全一致）。
+    _set_auth_cookie(resp, create_token(user.id), request)
+    return resp

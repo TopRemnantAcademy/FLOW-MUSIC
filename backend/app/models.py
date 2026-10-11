@@ -42,7 +42,23 @@ class User(Base):
     mfa_enabled = Column(Boolean, default=False, nullable=False, server_default="0")
     failed_logins = Column(Integer, default=0, nullable=False, server_default="0")  # 连续失败计数
     locked_until = Column(DateTime(timezone=True), nullable=True)  # 账户锁定截止时刻
+
+    # GAP-003 OAuth 身份绑定（Google / Kakao / Naver 授权码登录）。
+    # 与 email 并存而非替代：email 是「展示/联系/密码登录」的标识，
+    # (oauth_provider, oauth_sub) 才是 OAuth 侧的**稳定身份**（sub 不随邮箱变更而变，
+    # 故身份查找永远优先于邮箱查找，见 app/oauth/service.py:_resolve_user）。
+    # 两者皆空 = 纯邮箱账号；二者同时存在 = 已绑定 OAuth。
+    oauth_provider = Column(String(32), nullable=True)  # google | kakao | naver
+    oauth_sub = Column(String(255), nullable=True)  # provider 侧唯一用户标识
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        # 同一 provider 的同一 sub 只能对应一个账号（并发首登的最终防线）。
+        # 用唯一约束而非仅靠应用层 check-then-insert：两个并发请求会同时通过查询。
+        # 注：SQLite/Postgres 的唯一索引对 NULL 不生效，故纯邮箱账号（双 NULL）
+        # 不受影响，可无限存在。
+        UniqueConstraint("oauth_provider", "oauth_sub", name="uq_users_oauth_identity"),
+    )
 
 
 class Song(Base):

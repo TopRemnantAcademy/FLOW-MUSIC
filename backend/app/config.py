@@ -181,6 +181,30 @@ class Settings(BaseSettings):
     google_client_id: str = ""  # Google OAuth Client ID（비우면 Google 로그인 비활성화）
     encryption_key: str = ""  # Fernet 密钥（base64 32字节或任意口令自动派生）；生产必须设置
 
+    # ---- GAP-003 OAuth 授权码登录（Google / Kakao / Naver）----
+    # 与上面 google_client_id（GIS ID 令牌直传腿）并存，二者互不影响：
+    #   · /api/auth/google         ：前端拿 ID 令牌 POST（已存在）
+    #   · /api/auth/oauth/{p}/...  ：标准授权码 302 回跳腿（本组配置驱动）
+    # provider 的 enabled 判定 = client_id 非空（Kakao 允许**空 Client Secret**，见下）。
+    oauth_google_client_secret: str = ""
+    oauth_kakao_client_id: str = ""
+    # ⚠ Kakao 允许空 Secret：其「Client Secret」是可选安全增强（Kakao 后台可关闭），
+    #   关闭时令牌端点只校验 client_id → 此处必须允许空值，不得对空 Secret fail-closed，
+    #   否则「按官方最简配置接入的 Kakao 登录」会 503 不可用。
+    oauth_kakao_client_secret: str = ""
+    oauth_naver_client_id: str = ""
+    oauth_naver_client_secret: str = ""
+    # 回跳地址（必须与 provider 控制台登记值逐字一致，否则授权码换令牌报 invalid_grant）。
+    # 空则按 oauth_public_base_url + /api/auth/oauth/{provider}/callback 推导。
+    oauth_redirect_base_url: str = ""
+    # 前端落点：成功 → `{frontend_base}?oauth=1`；失败 → `?oauth=0&reason=...`。
+    oauth_frontend_redirect_url: str = "/account"
+    # state 票据（服务端签名短寿命 JWT）寿命，秒。够走完一次授权页往返即可。
+    oauth_state_expire_seconds: int = 600
+    # ⚠ 客户端（provider）网络访问一律**不走代理**：代理会带来凭据泄露面
+    #   （HTTP_PROXY 上游可见授权码/令牌），且与 SSRF 出口策略冲突。
+    oauth_http_timeout: float = 10.0
+
     # FLOW ↔ 音乐 co-location 令牌交换（server-to-server 内部密钥）。
     # 为空则 /api/auth/flow-exchange 返回 503（功能未启用）。绝不向客户端暴露。
     flow_internal_token: str = ""
