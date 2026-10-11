@@ -1,0 +1,125 @@
+# ══════════════════════════════════════════════════════════════════════
+# [2026-09-15] 顶层 `version:` 已移除 —— compose v2 会告警 "obsolete" 且忽略它。
+# ai-music-platform — co-location 배포 compose (FLOW 와 동일 홍콩 대용량 1대)
+# 보안 게이트(T6.1/T6.10/T6.11/T6.6) 적용:
+#   T6.1  — DB/Redis 포트는 127.0.0.1 에만 바인딩(호스트 전면 노출 금지)
+#   T6.10 — Redis 무인증 금지(requirepass 필수)
+#   T6.11 — 앱 컨테이너 정의 + healthcheck 필수
+#   T6.6  — 앱 컨테이너 리소스 상한(mem_limit/cpus) 정의
+# ══════════════════════════════════════════════════════════════════════
+services:
+  # ┌──────────────────────────────────────────────────────────────────────┐
+  # │ [2026-09-14] postgres / redis 는 **현재 코드가 사용하지 않는다** → 주석 처리.      │
+  # │ 실측 근거:                                                            │
+  # │  · backend 의 DATABASE_URL = sqlite:////app/data/app.db (아래 backend 참조) │
+  # │    → postgres 서비스는 어떤 코드도 접속하지 않음 (psycopg2 도 requirements 미포함).│
+  # │  · settings.redis_url(config.py:10) 은 **소비자 0명** (app 전체 grep 결과 정의뿐). │
+  # │    현재 rate limit 은 인메모리.                                          │
+  # │ 그런데 둘 다 `:?` 필수라 **쓰지도 않는 서비스 때문에 docker compose up 이 실패**했다. │
+  # │ 기본 비밀번호를 되돌리는 건 D37 원칙 위반이므로, 서비스 자체를 비활성화하는 것이 정답. │
+  # │ → Postgres 로 전환할 때: 아래 주석 해제 + psycopg2 추가 + DATABASE_URL 변경.      │
+  # └──────────────────────────────────────────────────────────────────────┘
+  # postgres:
+  #   image: postgres:16-alpine
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: music
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 필수 — 기본 비밀번호는 금지}
+  #     POSTGRES_DB: music
+  #   ports:
+  #     - "127.0.0.1:5432:5432"
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+
+  # redis:
+  #   image: redis:7-alpine
+  #   restart: unless-stopped
+  #   command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD 필수 — 기본 비밀번호는 금지}"]
+  #   ports:
+  #     - "127.0.0.1:6379:6379"
+
+  # T6.11 + T6.6: 앱 컨테이너 정의 + healthcheck + 리소스 상한
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # SQLite 기본(requirements 에 psycopg2 미포함 → Postgres 전환 시 드라이버 추가 필요)
+      DATABASE_URL: sqlite:////app/data/app.db
+      # [2026-09-14] 스키마 생성 방식을 **명시**한다(종전엔 코드 기본값에 암묵 의존).
+      #   "1" = lifespan 에서 Base.metadata.create_all 로 자동 생성（신규 SQLite 에선 이걸로 충분）
+      #   "0" = create_all 비활성화 → **반드시 `alembic upgrade head` 를 별도 실행**해야 함
+      # ⚠ 현재는 create_all 경로다. Alembic(backend/alembic.ini + backend/migrations/) 이
+      #   별도로 존재하므로 **둘을 함께 쓰면 충돌**한다(create_all 이 먼저表를 만들고
+      #   alembic 이 "이미 존재"로 실패). 스키마를 버전 관리하거나 Postgres 로 이전할 때
+      #   "0" 으로 바꾸고 배포 절차에 `alembic upgrade head` 를 추가할 것.
+      SCHEMA_CREATE_ALL: "1"
+      # [2026-09-14] REDIS_URL 제거 — settings.redis_url 소비자 0명(미사용) 이면서
+      # `:?` 필수 때문에 배포를 막던 항목. Redis 실제 도입 시 여기 되살리고 아래 주석 해제.
+      # 🔴 [D37] **필수**. 종전에는 `${JWT_SECRET:-change-me-please}` 로 공개 기본값을
+      #    능동 주입 했다 → 미설정 시 누구나 위조 JWT 를 만들 수 있는 완전 인증 우회.
+      #    `:?` 로 바꿔 미설정 시 **배포 자체가 실패** 하게 한다(런타임 503 가드와 2중 방어).
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 필수 — 공개 기본값(change-me-please) 으로는 인증이 완전히 우회됩니다}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # 🔴 [2026-09-14] 운영 엔진 = **Mureka**。종전 `MUSIC_PROVIDER: suno` 하드코딩은
+      #    .env(MUSIC_PROVIDER=mureka) 및 app/config.py:54 기본값(mureka) 과 **모순** 이었다.
+      #    실측: .env 의 SUNO_API_KEY 길이 = 0 → Suno 로 배포하면 전 곡 401 후
+      #    조용히 failed(과거 D48 과 정확히 동일한 실패 모드). env 값을 따르되 기본은 mureka.
+      MUSIC_PROVIDER: ${MUSIC_PROVIDER:-mureka}
+      # 아래 Suno 변수는 MUSIC_PROVIDER=suno 로 되돌릴 때만 쓰이는 레거시 경로。
+      # 变量名对应 app/config.py:32-35（SUNO_API_BASE / SUNO_API_KEY / SUNO_EMAIL / SUNO_PASSWORD）。
+      SUNO_API_BASE: ${SUNO_API_BASE:-https://open.suno.cn/api/v1}
+      SUNO_API_KEY: ${SUNO_API_KEY:-}
+      SUNO_EMAIL: ${SUNO_EMAIL:-}
+      SUNO_PASSWORD: ${SUNO_PASSWORD:-}
+      # Mureka（昆仑万维）商业 API — **实际主引擎**（config.py:54 默认 mureka）。
+      # `:?` 필수 지정: 미설정 시 **배포 자체가 실패** 하도록(JWT_SECRET/REDIS_PASSWORD 와 동일 규칙)。
+      # 빈 값으로 배포하면 전 곡이 401 로 조용히 실패하므로 사전 차단이 옳다。
+      MUREKA_API_KEY: ${MUREKA_API_KEY:?MUREKA_API_KEY 필수 — 운영 엔진(Mureka) 자격증명이 없으면 전 곡이 실패합니다}
+      MUREKA_MODEL: ${MUREKA_MODEL:-mureka-9}
+      MUREKA_N: ${MUREKA_N:-1}
+      MUREKA_MAX_CONCURRENT: ${MUREKA_MAX_CONCURRENT:-1}
+      # [2026-09-14] 출구 자체점검: 배포 직후 403 지역차단을 첫 로그로 즉시 판정。
+      #   off=미실시 / warn=경고만(기본, 기동 차단 없음) / strict=지역차단 시 기동 거부
+      MUREKA_PREFLIGHT_MODE: ${MUREKA_PREFLIGHT_MODE:-warn}
+      # [D33] 코드 기본값은 False(config.py:48) 이므로 **여기서 명시적으로 켠다**.
+      # [2026-09-14 정정] 종전 주석의 "CWD 의존" 경고는 **해결됨**:
+      #   moderation.py:39 가 `Path(__file__).parent.parent / "blocklist.txt"` 로
+      #   **파일 기준** 해석 → 컨테이너 CWD(/app) 와 무관하게 backend/blocklist.txt(실단어 50행) 로드.
+      #   (.dockerignore 가 .txt 를 제외하지 않으므로 이미지에 포함됨 — MODERATION_BLOCKLIST_PATH 불필요)
+      #   그래도 배포 후 1회는 moderation 상태로 실단어 로드 여부를 확인할 것(체크리스트 3-④).
+      ENABLE_MODERATION: "true"
+      # 🔴 [2026-09-15] 管理台凭据 —— 镜像内**没有 .env**（.dockerignore 排除），
+      #    且 compose 不会自动透传未列出的变量 → 不在这里声明，容器内就是空的：
+      #      · ADMIN_TOKEN 空 → admin 路由**整体禁用**（auth.py:275,306 → 管理台全废）
+      #      · ENCRYPTION_KEY 空 → crypto.py:22 回退**固定开发密钥**去加密
+      #        EngineConfig.api_key 等静态敏感字段（代码注释明写"운영 금지"）
+      #    故二者与 JWT_SECRET 同级：`:?` 必填，bootstrap.sh 会自动生成。
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?ADMIN_TOKEN 필수 — 없으면 관리자 콘솔(심의/설정/과금) 전체가 비활성화됩니다}
+      # 只读管理员（仅 GET，变更类 403）。可不填。
+      ADMIN_VIEWER_TOKEN: ${ADMIN_VIEWER_TOKEN:-}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY 필수 — 미설정 시 고정 개발 키로 암호화(at-rest) 됩니다}
+      # 试听片段缓存：默认 `.cache/preview` 是相对路径 → 落在容器可写层（重建即丢、
+      # 且污染镜像层）。改挂到已持久化的 data 卷内。
+      PREVIEW_CACHE_DIR: /app/data/.cache/preview
+    # T6.1: API 도 127.0.0.1 로만 바인딩(역방향 프록시/caddy 경유 권장)
+    ports:
+      - "127.0.0.1:8000:8000"
+    # [2026-09-14] redis 서비스 비활성화에 따라 depends_on 제거
+    healthcheck:
+      # python:3.11-slim 내장 python 으로 /health 폴링(curl 미의존)
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # T6.6: 리소스 상한(단일 공존 호스트 보호)
+    mem_limit: 1g
+    cpus: "1.0"
+    volumes:
+      - appdata:/app/data
+
+volumes:
+  # pgdata: postgres 비활성화로 미사용 (Postgres 전환 시 주석 해제)
+  appdata:

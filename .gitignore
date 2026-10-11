@@ -1,0 +1,72 @@
+# ===== 环境变量 / 密钥（切勿提交真实值） =====
+.env
+.env.*
+.env.local
+backend/.env
+backend/.env.local
+# 但保留示例文件（供他人复制填写）
+!.env.example
+!backend/.env.example
+
+# ===== 数据库（运行时 + 测试 + 备份，均不入库） =====
+*.db
+*.db.bak
+*.sqlite
+*.sqlite3
+app.db
+app.db.bak
+app.db.bak*
+backend/app.db
+backend/app.db.bak*
+.test_app.db
+backend/.test_app.db
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv*/
+venv/
+env/
+
+# ===== Node / 前端（frontend） =====
+node_modules/
+.next/
+out/
+.turbo/
+frontend/tsconfig.tsbuildinfo
+
+# APK 빌드 시 app/admin 을 일시 격리하는 보관소(scripts/build-apk.mjs).
+# 정상 종료 시 자동 삭제되지만, 비정상 종료로 남으면 소스가 통째로 빠진 상태가 되므로
+# 절대 커밋되지 않게 막는다(복구: node frontend/scripts/build-apk.mjs --restore-only).
+.apk-build-stash/
+
+# ===== 试听片段本地缓存（未配置对象存储时的回退产物，可随时重算） =====
+.cache/
+backend/.cache/
+
+# ===== 第三方 vendor（**故意入库**，非忽略）=====
+# 整包入库不是为了用，而是为了「留存 MIT 版权声明」——许可证要求复制副本时保留声明。
+# 各来源、许可证、已移植/未移植的清单见 vendor/README.md（务必先读那个，别只读这段）。
+#
+#   chguanw/ace-step-1.5          MIT © 2026 ACEStudio
+#                                 捆绑 acestep/third_parts/nano-vllm = MIT © 2025 Xingkai Yu
+#                                 openrouter/ 无 LICENSE（版权所有）→ 已在子目录 .gitignore 排除
+#   onmicrosoft/Self-Music        MIT © 2018-present, Yuxi(Evian) You and Vve
+#                                 全量入库但只移植了 playlist-manager.ts → frontend/lib/playlist.ts
+#                                 + frontend/lib/playback.ts（其余候选组件未迁移，原因见 vendor/README.md）
+#
+# 后端 grep 均无 import；用途是「协议基线实证来源」。
+# 重新获取：
+#   cnb git get-archive --repo chguanw/ace-step-1.5   --ref-with-path main
+#   cnb git get-archive --repo onmicrosoft/Self-Music --ref-with-path main   # gzip tar，非 zip
+# Self-Music 下载时若图省事直接 get-archive，会多出一个与已解压目录完全重复的 src.tar.gz
+# （实测 5.8 MB 二进制）。解压后务必别让它进索引 —— 这里显式挡掉。
+vendor/self-music/src.tar.gz
+
+# ===== 日志 / 临时 / 系统文件 =====
+*.log
+.DS_Store
+Thumbs.db
+.pytest_tmp/

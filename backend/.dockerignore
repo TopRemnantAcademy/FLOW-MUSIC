@@ -1,0 +1,38 @@
+# 镜像构建上下文排除表（backend/Dockerfile 的 `COPY . .` 以此为界）
+#
+# ⚠ 没有这份文件时，COPY . . 会把开发机的 .env / .env.bak（真实密钥）、
+# .venv*（数百 MB 站点包）、*.db（含用户数据）一起烤进镜像层 ——
+# 镜像层即使后续 rm 也仍可从历史层中提取（CWE-538 / CWE-312）。
+
+# ===== 密钥 / 环境变量（最重要） =====
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# ===== Python 虚拟环境 / 缓存 =====
+.venv*/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== 运行时数据 / 产物（绝不进镜像） =====
+# ⚠ 2026-09-15 实测：只写 `*.db` / `*.db.bak` **匹配不到 `app.db.bak-20260903-previewgate`**
+#   这类带日期后缀的备份 → 真实用户数据被烤进镜像层（镜像层删不掉，CWE-538）。
+#   故一律用通配后缀 `*.db*` / `*.bak*`，宁可多排也别漏。
+*.db*
+*.bak*
+*.sqlite*
+.cache/
+*.log
+.pytest_tmp/
+
+# ===== 测试与工具（镜像只跑运行时） =====
+tests/
+scripts/

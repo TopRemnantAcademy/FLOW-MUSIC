@@ -1,0 +1,23 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# FLOW(CCM) 定时备份示例（crontab -e 后粘贴；按需调整时间/路径）
+#
+# 安装： crontab -e   （粘贴下面内容）
+# 查看： crontab -l
+# 日志： 各任务重定向到 /var/log/flow-ccm-*.log
+# ─────────────────────────────────────────────────────────────────────────────
+
+APP_DIR=/opt/flow-ccm
+BACKUP_DIR=/opt/flow-ccm/backups
+
+# 每天 03:17（香港时间）做一次 gospel.db 在线备份，保留 14 天
+17 3 * * * APP_DIR=/opt/flow-ccm KEEP_DAYS=14 /opt/flow-ccm/deploy/hk/flow/backup.sh >> /var/log/flow-ccm-backup.log 2>&1
+
+# 每周一 04:05 清理 dangling 镜像，避免磁盘被旧层占满
+5 4 * * 1 docker image prune -f >> /var/log/flow-ccm-prune.log 2>&1
+
+# ── 可选：加密备份密钥（强烈建议通过 secret manager 注入口令，勿硬编码）────────
+# 下面示例从 /etc/flow/backup.pass 读取口令（权限 600，root 独有）：
+# 23 4 * * * APP_DIR=/opt/flow-ccm BACKUP_SECRETS=1 BACKUP_PASSPHRASE="$(cat /etc/flow/backup.pass 2>/dev/null)" /opt/flow-ccm/deploy/hk/flow/backup.sh >> /var/log/flow-ccm-backup.log 2>&1
+
+# ── 可选：异地同步（备份后再 cp 到挂载的 NAS / 对象存储挂载点）────────────────
+# 27 3 * * * APP_DIR=/opt/flow-ccm HOST_BACKUP_DIR=/mnt/nas/flow-ccm /opt/flow-ccm/deploy/hk/flow/backup.sh >> /var/log/flow-ccm-backup.log 2>&1

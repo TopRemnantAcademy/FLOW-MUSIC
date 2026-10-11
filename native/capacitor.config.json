@@ -1,0 +1,28 @@
+{
+  "appId": "com.flowccm.app",
+  "appName": "FLOW CCM",
+  "webDir": "../frontend/out",
+  "bundledWebRuntime": false,
+  "loggingEnabled": false,
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "ios": {
+    "contentInset": "always",
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1200,
+      "showSpinner": false
+    },
+    "StatusBar": {
+      "style": "DARK"
+    },
+    "Keyboard": {
+      "resize": "body"
+    }
+  }
+}

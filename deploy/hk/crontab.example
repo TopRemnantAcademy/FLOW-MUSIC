@@ -1,0 +1,33 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 定时任务示例（crontab -e 后粘贴；按需调整时间）
+#
+# 安装：
+#   crontab -e
+#   （粘贴下面内容，注意修改 APP_DIR / HOST_BACKUP_DIR）
+# 查看：
+#   crontab -l
+# ─────────────────────────────────────────────────────────────────────────────
+
+APP_DIR=/opt/flow
+HOST_BACKUP_DIR=/opt/flow-backups
+
+# 每天 03:17（香港时间）做一次 SQLite 在线备份，保留 14 天
+17 3 * * * APP_DIR=/opt/flow KEEP_DAYS=14 HOST_BACKUP_DIR=/opt/flow-backups /opt/flow/deploy/hk/backup.sh >> /var/log/flow-backup.log 2>&1
+
+# 每周一 04:05 清理 dangling 镜像，避免磁盘被旧层占满
+5 4 * * 1 docker image prune -f >> /var/log/flow-prune.log 2>&1
+
+# 每小时探测一次 Mureka 出口，异常才写日志（403 地域封锁会立刻暴露）
+# 退出码：0=正常 2=401 3=403地域封锁 4=网络
+#
+# ⚠ 两条关键点：
+#   1) 镜像刻意不含 scripts/（.dockerignore 排除），容器重建后目录就没了 → 每次先 cp。
+#   2) cp 前必须 rm -rf：docker cp 在目标目录已存在时会拷成 /app/scripts/scripts。
+#      因此这里用 `cp src backend:/app/scripts_tmp` + 移动到固定路径，避免嵌套。
+# ⚠ 4) 源目录是 `backend/scripts`（probe_mureka.py 在这里），**不是**仓库根的 scripts/。
+#      拷错会得到 "can't open file" + exit 2，而 2 代表 401 → 问题被误诊成密钥错误。
+# ⚠ 3) 每条 compose 子命令都要带 --env-file：${VAR:?} 在 exec/cp 上同样会做插值，
+#      漏了就会 "required variable ... missing a value" 直接失败 —— 而本行末尾有
+#      `|| echo` 兜底，等于**每小时静默失败**，403 封锁永远不会被发现。
+#      （2026-09-15 真机实测确认）
+23 * * * * cd /opt/flow && /usr/bin/docker compose --env-file /opt/flow/.env exec -T backend rm -rf /app/scripts /app/scripts_tmp && /usr/bin/docker compose --env-file /opt/flow/.env cp backend/scripts backend:/app/scripts_tmp && /usr/bin/docker compose --env-file /opt/flow/.env exec -T backend mv /app/scripts_tmp /app/scripts && /usr/bin/docker compose --env-file /opt/flow/.env exec -T backend python scripts/probe_mureka.py > /tmp/mureka-probe.log 2>&1 || echo "$(date) probe exit=$?" >> /var/log/flow-mureka-alert.log

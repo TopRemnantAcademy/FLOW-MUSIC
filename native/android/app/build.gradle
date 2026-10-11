@@ -1,0 +1,74 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace = "com.flowccm.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.flowccm.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    // 发布签名：凭据来自 android/local.properties（已被 .gitignore 覆盖，绝不入库）。
+    // 缺失时不报错、仅产出未签名包 —— 让 CI 显式失败而不是静默产出废包。
+    signingConfigs {
+        release {
+            def lp = rootProject.file('local.properties')
+            if (lp.exists()) {
+                def p = new Properties()
+                lp.withInputStream { p.load(it) }
+                def sf = p.getProperty('storeFile')
+                if (sf) {
+                    storeFile rootProject.file(sf)
+                    storePassword p.getProperty('storePassword')
+                    keyAlias p.getProperty('keyAlias')
+                    keyPassword p.getProperty('keyPassword')
+                }
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            // R8 会与 Capacitor 插件反射冲突，首版关闭；体积与混淆优化留到 1.1 专项处理。
+            signingConfig signingConfigs.release
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

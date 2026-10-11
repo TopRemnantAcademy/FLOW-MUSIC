@@ -1,0 +1,89 @@
+# PyTorch with CUDA 12.8 / 13.0
+safetensors==0.7.0
+--extra-index-url https://download.pytorch.org/whl/cu128
+--extra-index-url https://download.pytorch.org/whl/cu130
+# [2026-09-27] 2.7.1 -> 2.9.1: CVE-2025-2999 (torch.nn.utils.rnn.unpack_sequence 内存破坏,
+#   修复版 >=2.9.1)。trio 必须同升, 三者轮子互锁: torchaudio 2.9.1 要求 torch==2.9.1,
+#   torchvision 0.24.1 要求 torch==2.9.1。
+#   Windows: cu128 索引的 win_amd64 wheel 自 2.8.0 起编译在 CXX11_ABI=1,
+#   而旧版 torch 为 0.0 -> 2.7.1 与 2.9.1 不可共存于同一环境。
+#   已核实 cp311/win_amd64 三个轮子同索引可解析(2.9.1 要求 Python>=3.10)。
+# [2026-10-05] win32 行 2.9.1 -> 2.11.0: TCA 告警 CVE-2025-3000(torch.jit.script
+#   内存破坏)标注修复版为 2.13.0, 但 **cu128 索引里没有 2.13.0** ——
+#   逐个索引实测(download.pytorch.org/whl/<idx>/<pkg>/, cp311):
+#     cu128 索引 torch      最高 2.11.0   (2.12/2.13/2.14 均无)
+#     cu128 索引 torchvision 最高 0.26.0   (0.28.0 无)
+#     cu128 索引 torchaudio  最高 2.11.0
+#     cu130 索引 torch      含 2.13.0 / 2.14.0 / 2.14.1, torchvision 含 0.28.0
+#   → 2.13.0 只随 cu130 发布。要在 win32 上真正修掉 CVE-2025-3000, 必须把
+#     win32 行也切到 +cu130(等于放弃 CUDA 12.8, 抬到 CUDA 13.0), 那是**驱动级
+#     变更**, 不在本次授权范围内, 已如实留证并保持 cu128。
+#   本次能做的是把 win32 行升到 cu128 的天花板 2.11.0(仍高于 CVE-2025-2999 的
+#   修复版 2.9.1), 配对关系查 PyPI requires_dist 定的, 非猜测:
+#     torch 2.11.0      win_amd64 轮子 7 个
+#     torchvision 0.26.0 requires_dist = torch==2.11.0, win_amd64 轮子 7 个
+#     torchaudio 2.11.0  win_amd64 轮子 7 个(cu128 索引下也存在, 实测 1 个 cp311 条目)
+#   pip 干跑实测(--platform win_amd64 --python-version 3.11, 非推断):
+#     pip install --dry-run --only-binary=:all: --extra-index-url .../cu128 \
+#       torch==2.11.0+cu128 torchvision==0.26.0+cu128 torchaudio==2.11.0+cu128
+#     → rc=0, Would install 三个包
+#   三者必须同升: 原来的 torchvision==0.24.1 要求 torch==2.9.1, 只升 torch 会锁死冲突。
+torch==2.11.0+cu128; sys_platform == 'win32'
+torchvision==0.26.0+cu128; sys_platform == 'win32'
+torchaudio==2.11.0+cu128; sys_platform == 'win32'
+# macOS arm64 (Apple Silicon): latest CPU/MPS wheels
+torch>=2.9.1; sys_platform == 'darwin' and platform_machine == 'arm64'
+torchaudio>=2.9.1; sys_platform == 'darwin' and platform_machine == 'arm64'
+torchvision; sys_platform == 'darwin' and platform_machine == 'arm64'
+# Linux x86_64 with CUDA 12.8
+# [2026-10-05] 2.13.0+cu128 -> 2.11.0+cu128: 同上, cu128 索引无 2.13.0。
+#   顺带修正一处既存配对错误: torchvision 0.25.0 的 requires_dist 是 torch==2.10.0,
+#   与本行声明的 torch==2.13.0 本就配不上; 0.26.0 要求 torch==2.11.0, 与新值对齐。
+torch==2.11.0+cu128; sys_platform == 'linux' and platform_machine == 'x86_64'
+torchvision==0.26.0+cu128; sys_platform == 'linux' and platform_machine == 'x86_64'
+torchaudio==2.11.0+cu128; sys_platform == 'linux' and platform_machine == 'x86_64'
+# Linux aarch64 with CUDA 13.0 (e.g. NVIDIA DGX Spark)
+# cu130 索引确实有 torch 2.13.0 / 2.14.x 与 torchvision 0.28.0, 故此行维持 cu130 不变。
+torch==2.13.0+cu130; sys_platform == 'linux' and platform_machine == 'aarch64'
+torchvision==0.28.0+cu130; sys_platform == 'linux' and platform_machine == 'aarch64'
+torchaudio==2.11.0+cu130; sys_platform == 'linux' and platform_machine == 'aarch64'
+
+# Core dependencies
+transformers>=4.51.0,<4.58.0
+diffusers
+gradio>=6.16.0,<7.0
+matplotlib>=3.7.5
+scipy>=1.10.1
+soundfile>=0.13.1
+loguru>=0.7.3
+einops>=0.8.1
+accelerate>=1.12.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+numba>=0.63.1
+vector-quantize-pytorch>=1.27.15
+torchcodec>=0.9.1; platform_machine != 'aarch64'
+torchao
+toml
+modelscope
+
+# Training dependencies (required for LoRA/LoKr training)
+peft>=0.18.0
+lycoris-lora
+lightning>=2.0.0
+tensorboard>=2.0.0
+
+# MLX dependencies (Apple Silicon native acceleration - macOS only)
+# Provides significant speedup for LLM inference on Apple Silicon GPUs
+mlx>=0.25.2; sys_platform == 'darwin' and platform_machine == 'arm64'
+mlx-lm>=0.20.0; sys_platform == 'darwin' and platform_machine == 'arm64'
+
+# nano-vllm dependencies
+triton-windows>=3.0.0,<3.4; sys_platform == 'win32'
+triton>=3.0.0; sys_platform == 'linux'
+flash-attn @ https://github.com/sdbds/flash-attention-for-windows/releases/download/2.8.2/flash_attn-2.8.2+cu128torch2.7.1cxx11abiFALSEfullbackward-cp311-cp311-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.11' and platform_machine == 'AMD64'
+flash-attn; sys_platform == 'linux' and platform_machine == 'x86_64'
+xxhash
+
+# Local package - install with: pip install -e acestep/third_parts/nano-vllm
+# nano-vllm

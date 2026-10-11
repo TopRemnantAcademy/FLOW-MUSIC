@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# FLOW 共置 Caddy 路由片段（把本段**追加**进音乐平台的 Caddyfile，不要替换原内容）
+#
+# 前提：
+#   · FLOW 以共置模式启动（FLOW_COLOCATE=1），跳过自带 Caddy，
+#     由 docker-compose.colocation.yml 把端口暴露到宿主机回环：
+#         backend → 127.0.0.1:8001   （音乐平台已占 8000）
+#         ui      → 127.0.0.1:8502   （8501 被 FLOW 自带 caddy 占用过，故错开）
+#   · Caddy 以 --network host 运行 → 下面的 127.0.0.1 就是宿主机，可直连。
+#
+# 使用：把 __FLOW_DOMAIN__ 换成真实域名（建议子域，如 flow.example.com），
+#       追加到 /opt/flow/Caddyfile 末尾后 `docker exec <caddy> caddy reload --config /etc/caddy/Caddyfile`
+# ─────────────────────────────────────────────────────────────────────────────
+
+__FLOW_DOMAIN__ {
+	# ── 1. FLOW API 与健康检查 → backend ──
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8001
+	}
+	handle /health {
+		reverse_proxy 127.0.0.1:8001
+	}
+	handle_path /docs* {
+		reverse_proxy 127.0.0.1:8001
+	}
+	handle /openapi.json {
+		reverse_proxy 127.0.0.1:8001
+	}
+
+	# ── 2. FLOW 管理/用户 UI（Streamlit）──
+	#    ⚠ Streamlit 依赖 WebSocket 做交互回传。Caddy v2 的 reverse_proxy
+	#       默认即支持 Upgrade/Connection 透传，无需额外配置；但若中间再套一层
+	#       Nginx/CDN，需确保其放行 WebSocket。
+	#    ⚠ Streamlit 健康检查路径 /_stcore/healthz 一并透传（compose healthcheck 用到，
+	#       虽然容器内自测不走 Caddy，但保留便于外部探活）。
+	handle /_stcore/* {
+		reverse_proxy 127.0.0.1:8502
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8502
+	}
+
+	# 安全响应头（与音乐站点保持一致）
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# 请求体上限：FLOW 支持大文档上传（compose 里 STREAMLIT_SERVER_MAX_MESSAGE_SIZE=104857600
+	# ≈100MB，另有 .env 的 MAX_UPLOAD_SIZE_MB）。音乐站点模板的 20MB 对 FLOW 不够，
+	# 故这里放大；如实际用不到大文档可下调。
+	request_body {
+		max_size 120MB
+	}
+}

@@ -1,0 +1,43 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+pydantic[email]==2.9.0
+pydantic-settings==2.5.2
+# CVE-2024-33663(fatal, algorithm confusion 于 OpenSSH ECDSA 等密钥格式)
+# CVE-2024-33664(warning, JWT bomb / JWE 解码期资源耗尽)
+# 两者均在 3.4.0 修复; 修复只改算法校验路径, 不触碰 HS256 的 encode/decode 签名。
+python-jose[cryptography]==3.4.0
+cryptography>=42.0.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+# CNB TCA 报出的 3 条(CVE-2026-24486 路径穿越需 0.0.22 / CVE-2026-40347 DoS 需 0.0.26
+# / CVE-2026-53538 解析器差异需 0.0.30), 取三者上界; 并与仓库根的
+# requirements.txt:7 与 requirements-deploy.txt:19 对齐。
+# [2026-09-25] CVE-2026-53539(DoS, CVSS 7.5): QuerystringParser 在 FIELD_NAME 状态
+# 先散 find(b"&") 再回退 find(b";"), 0.0.12 更甚——`data.find(b"&")` 无结束位置,
+# 每次迭代都扫到缓冲区末尾 → 全块 O(B^2)。已随本次升级对齐 requirements-deploy.txt:19
+# 的 0.0.32(该版本同时含 multipart 级部分分隔符修复)。
+# [合并 master 时解决冲突] 本文件定 0.0.32, 与 PR #56 原主张的 0.0.31 相比不降级(0.0.32 > 0.0.31):
+# master 的 CVE-2026-53539 修复(commit 7da4950)与 PR #56 的「CVE-2026-40347 过期残留, 不降级」
+# 结论并不冲突 —— 0.0.32 同时覆盖 CVE-2026-24486(0.0.22) / 40347(0.0.26) / 53538(0.0.30) / 53539,
+# 故取 master 的 0.0.32, 测试面与部署面同版。
+python-multipart==0.0.32
+httpx==0.27.2
+boto3==1.35.0
+# CVE-2025-71176(warning, /tmp/pytest-of-{user} 临时目录不安全导致 DoS 或提权), 9.0.3 修复。
+# 9.1.1 >: 与本机 venv 及 .cnb.yml(根仓库 CI)已跑通的 pytest 版本一致。
+pytest==9.1.1
+alembic==1.19.1
+
+# —— 真实支付供应商 (GAP-004 step-2 provider 子轨; 启用 stripe provider 时需安装) ——
+# lazy import: 未装也不影响 manual/离线流程与单测(单测以 sys.modules 注入假模块).
+stripe>=10.0.0
+
+# —— 音频后处理（可选，按需启用 enable_audio_postprocess）——
+pedalboard>=0.9.0
+noisereduce
+ffmpeg-normalize
+# 以下重型依赖需 GPU，默认不启用（F4 分离 / F5 开源生成）：
+# demucs
+# torch
+# audiocraft

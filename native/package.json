@@ -1,0 +1,40 @@
+{
+  "name": "flow-ccm-native",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FLOW CCM 네이티브 래퍼(Capacitor 8). Web 프론트엔드(../frontend)와 분리된 **패키징 전용** 워크스페이스.",
+  "scripts": {
+    "preflight": "node preflight.mjs",
+    "build:web": "cd ../frontend && APK_BUILD=1 next build",
+    "add:android": "cap add android",
+    "add:ios": "cap add ios",
+    "sync": "cap sync",
+    "sync:android": "cap sync android",
+    "sync:ios": "cap sync ios",
+    "open:android": "cap open android",
+    "open:ios": "cap open ios",
+    "build:apk:debug": "cd android && gradlew assembleDebug",
+    "build:apk:release": "cd android && gradlew assembleRelease",
+    "build:aab:release": "cd android && gradlew bundleRelease"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/haptics": "^8.0.0",
+    "@capacitor/ios": "^8.0.0",
+    "@capacitor/keyboard": "^8.0.0",
+    "@capacitor/splash-screen": "^8.0.0",
+    "@capacitor/status-bar": "^8.0.0",
+    "@capgo/capacitor-native-audio": "^8.4.30"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.0.0"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

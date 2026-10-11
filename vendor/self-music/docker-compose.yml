@@ -1,0 +1,40 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # The backend is not exposed directly to the host.
+    # Nginx will proxy requests to it.
+    expose:
+      - "8000"
+    volumes:
+      - ./backend/config.yaml:/app/config.yaml
+      - ./backend/music.db:/app/music.db
+      - ./backend/uploads:/app/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # The API URL is relative to the root, as Nginx will handle the proxy.
+        NEXT_PUBLIC_API_URL: /api
+    restart: unless-stopped
+    expose:
+      - "3000"
+
+  proxy:
+    image: nginx:latest
+    ports:
+      # Expose the application on port 8080 of the host machine.
+      - "8080:80"
+    volumes:
+      # Mount the nginx configuration.
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped

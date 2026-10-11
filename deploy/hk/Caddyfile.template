@@ -1,0 +1,68 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Caddy：反向代理 + 前端静态托管（自动 HTTPS，Let's Encrypt）
+#
+# 为什么需要：compose 里 backend 只绑定 **127.0.0.1:8000**（安全基线 T6.1），
+# 不直接对外。由 Caddy 终止 TLS 后转发。
+#
+# ⚠ 关键：Caddy 以 `--network host` 运行，所以下面的 127.0.0.1 **就是宿主机**，
+#    能正确连到 127.0.0.1:8000。若改成普通 bridge 网络，127.0.0.1 会指向
+#    Caddy 容器自身而连不通（这是最常见的踩坑点）。
+#
+# ⚠ 刻意不写自定义 log 文件：/var/log/caddy 在镜像中不保证存在，
+#    `output file` 指向不存在的目录会导致 Caddy **启动失败**。
+#    改用默认 stdout（`docker logs flow-caddy` 即可看），更稳。
+#
+# 路由规则（顺序即优先级）：
+#   1) /api/*  /health      → backend 127.0.0.1:8000
+#   2) 其余                  → 前端静态产物（next export 的 out/，挂载到 /srv）
+#
+# 前端为什么是静态文件而不是 Node 服务：
+#   本项目前端无动态路由（app/ 下全是静态页面），APK 构建早已走通
+#   `APK_BUILD=1 next build` 的静态导出路径（产物 out/）。生产环境不再跑 Node，
+#   既省内存（1GB 上限的共存主机）又少一个攻击面。安全响应头由 Caddy 统一设置，
+#   正好补上静态导出"next.config.js 的 headers() 不生效"这一短板。
+#
+# 使用：bootstrap.sh 会把 __MUSIC_DOMAIN__ 替换为真实域名后写入 /opt/flow/Caddyfile
+# ─────────────────────────────────────────────────────────────────────────────
+
+__MUSIC_DOMAIN__ {
+	# ── 1. API 与健康检查 → 仅本机监听的 backend ──
+	#    后端路由前缀实测：admin/auth/billing/songs/plaza 均为 /api/*（flow 为 /api/v1/*）；
+	#    /health 与 /docs 在根路径，故单独列出。
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8000
+	}
+	handle_path /docs* {
+		reverse_proxy 127.0.0.1:8000
+	}
+	handle /openapi.json {
+		reverse_proxy 127.0.0.1:8000
+	}
+	handle /health {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# ── 2. 前端静态站点（out/ 挂载到 /srv）──
+	#    next export 开启了 trailingSlash，目录型路径带 /index.html：
+	#    /create → /create/index.html 。try_files 两种形态都覆盖。
+	handle {
+		root * /srv
+		encode zstd gzip
+		try_files {path} {path}/index.html
+		file_server
+	}
+
+	# 安全响应头（后端 middleware 已设 CSP，此处不重复设置以免冲突）
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# 请求体上限：上传参考音频用（默认 10MB 偏小）
+	request_body {
+		max_size 20MB
+	}
+}

@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm:*)",
+      "Bash(mkdir:*)",
+      "Bash(npx create-next-app:*)",
+      "Bash(ls:*)",
+      "Bash(npx shadcn@latest add:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run build:*)",
+      "Bash(pkill:*)",
+      "Bash(true)",
+      "Bash(npm run dev:*)",
+      "Bash(npm run type-check:*)",
+      "Bash(npm run:*)",
+      "Bash(yarn build)",
+      "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(sed:*)",
+      "Bash(npx tsc:*)",
+      "Bash(find:*)",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(curl:*)",
+      "Bash(timeout 30 npm run build)",
+      "WebFetch(domain:github.com)",
+      "Bash(pnpm lint:*)",
+      "Bash(pnpm build)"
+    ],
+    "deny": [],
+    "defaultMode": "acceptEdits"
+  }
+}
