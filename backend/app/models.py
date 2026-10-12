@@ -86,7 +86,17 @@ class Song(Base):
     # 逐字时间轴（mureka 返回 choices[].lyrics_sections 的 JSON 字符串）。
     # 仅详情接口按需曝光；列表/广场接口不返回以控制包体（每首 100~300 字歌词 → ~10KB JSON）。
     lyrics_sync = Column(Text, nullable=True)
-    audio_cdn_url = Column(Text, default="")  # 回源到 CDN 后的稳定链接（供 APK 播放）
+    # 回源到自有桶 / CDN 后的**稳定**链接。主播放链路（SongOut.audio_url、FLOW sync、
+    # 下载、试听）都优先走它；为空时按需回填，回填不可用才回退上游 audio_url。
+    audio_cdn_url = Column(Text, default="")
+    # ---- GAP-019 归档 / 保留 ----
+    # 归档迁移发生的时间（None = 未归档）。存时间戳而非布尔：既标记状态，又能算出
+    # 「归档多久了」，供「归档 → 回热」的老歌点播策略（见 docs/CDN_ARCHIVE_RUNBOOK.md）。
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+    # 该曲音频对象在桶里的存储类别（STANDARD / STANDARD_IA / ...）。空 = 桶默认。
+    # 落库原因：存储类别是**运维事实**（费用与读取延迟都取决于它），只存在于
+    # S3 控制台时无法与曲目对齐排查，也无法断言「归档作业是否真的生效」。
+    storage_class = Column(String(32), server_default="", default="")
     # ---- GAP-010 音频格式（下载侧可选）----
     # ⚠️ Mureka 生成入参无格式/码率字段（官方 OpenAPI spec 实证，见 orchestrator/mureka.py 头部），
     # 故这里**不存**「用户点选的质量参数」而是存「下载时选定的格式」：

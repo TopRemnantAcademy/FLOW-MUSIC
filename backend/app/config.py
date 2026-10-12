@@ -38,13 +38,37 @@ class Settings(BaseSettings):
         "capacitor://localhost,http://localhost,https://localhost"
     )
 
-    # 对象存储（S3 兼容，可留空）
+    # ── 对象存储 / CDN（S3 兼容：腾讯云 COS / Cloudflare R2 / AWS S3；可留空）──
+    # 未配置（storage_endpoint / bucket / access_key / secret_key 任一为空）→
+    # `app.storage.s3.is_configured()` 为 False，**全链路优雅降级**：直接回上游
+    # `audio_url`（易过期但不报错），绝不 500。prod 未配 storage_* 即走这条。
     storage_endpoint: str = ""
     storage_region: str = "ap-hongkong"
     storage_bucket: str = ""
     storage_access_key: str = ""
     storage_secret_key: str = ""
+    # CDN 加速域名（如 https://cdn.example.com）。**播放链接一律经它出口**：
+    #   · 配了 → 上游回源 URL 由它拼装（s3._public_url），主播放链路下发的是它；
+    #   · 没配 → 退化用 {endpoint}/{bucket}（仍可用，只是没有边缘加速）。
+    # 之所以单列：回源端点（COS/R2 源站）常与对外加速域名不同，混用会把源站地址
+    # 暴露给客户端并绕过 CDN 缓存。
     storage_public_base: str = ""
+
+    # ── GAP-019 归档 / 保留（存储类别 + 生命周期）──
+    # 默认存储类别（S3 StorageClass）。STANDARD / STANDARD_IA / INTELLIGENT_TIERING /
+    # GLACIER_IR ...。留空 = 用桶默认。**低频档适合老歌**：省 40~60% 存储费，代价是首次
+    # 读取延迟升高（播放链路已在客户端 CDN 侧缓存，命中时无感）。
+    storage_class: str = ""
+    # 归档阈值（天）：`audio_cdn_url` 非空且 `archived_at` 为空、创建时间早于该值的曲目，
+    # 由 scripts/archive_cdn.py 迁移到 storage_class_archive。默认 90；<=0 = 关闭归档。
+    storage_archive_after_days: int = 90
+    # 归档目标存储类别（默认 STANDARD_IA 低频；GLACIER 类不可直接 GET，会打断播放，勿用）。
+    storage_class_archive: str = "STANDARD_IA"
+    # 生成完成时**同步**把音频回源到自有桶（在后台生成任务里 await，不占请求线程）。
+    # 开 → 新曲第一个响应就是 CDN 链接（推荐，也是本 GAP 的验收口径）；
+    # 关 → 仅靠请求路径的 write-behind 回填（首播一次走上游，之后走 CDN）。
+    # 两者都受 storage 未配置时的优雅降级保护：未配 storage_* 时无论如何都直连上游。
+    enable_cdn_mirror_on_generate: bool = True
 
     # 音乐供应商：切换生成后端（Route B 供应商抽象）。
     #   suno : 商业 API（open.suno.cn 协议基线），需配置 SUNO_API_KEY

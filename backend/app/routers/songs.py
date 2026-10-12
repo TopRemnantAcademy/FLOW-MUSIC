@@ -58,6 +58,8 @@ from app.entitlements import (
     preview_seconds,
 )
 from app.routers.auth import get_current_user, get_optional_user
+from app.storage import mirror as cdn_mirror
+from app.storage.transport import full_audio_url
 from app.security.ssrf import ssrf_guard
 from app import assist_llm
 from app.assist_llm import LLMError
@@ -206,6 +208,58 @@ _AUDIO_FORMATS: dict[str, tuple[str, str, str]] = {
 }
 
 
+#: 待回填的 song_id —— 进程内去重集合。
+#:
+#: 为什么需要它：详情/广场/搜索每次请求都会看一遍 `audio_cdn_url is None` 的曲目，
+#: 没有去重就会对同一首歌反复起后台任务（同一对象键重复下载上传，白白烧带宽与桶请求额度）。
+#: 用进程内 set 而非 Redis：回填是**尽力而为的优化**，多进程各做一次也只多一份同键覆盖，
+#: 代价可接受；引入分布式锁会把「播放链路的优化」变成「播放链路的依赖」。
+_cdn_backfill_inflight: set[int] = set()
+
+
+def schedule_cdn_backfill(song: Song) -> None:
+    """给「有上游链接、还没 CDN 链接」的曲目排一个后台回源任务（write-behind）。
+
+    · 本轮响应**不等**它（不阻塞请求）；下一次拉取这首曲目时即命中 CDN。
+    · 未配 storage / 已有 CDN 链接 → 直接返回（prod 未配 storage_* 时这里是纯 no-op）。
+    · 后台任务自带 SessionLocal 与全部异常兜底，不会污染当前请求的 db 会话。
+    """
+    if song is None or song.audio_cdn_url or not song.audio_url:
+        return
+    if not cdn_mirror.can_mirror(song.audio_url):
+        return
+    sid = song.id
+
+    async def _runner() -> None:
+        try:
+            await cdn_mirror.mirror_in_background(sid, SessionLocal())
+        finally:
+            _cdn_backfill_inflight.discard(sid)
+
+    if sid in _cdn_backfill_inflight:
+        return
+    _cdn_backfill_inflight.add(sid)
+    try:
+        # 已处于事件循环中（FastAPI async 端点 / async 依赖）→ 直接调度；
+        # 同步端点（def handler 在线程池里跑）没有运行中的循环 → 优雅跳过，
+        # 由回填脚本或下一次 async 路径补上（宁可少做，不可在请求线程里做 30MB 下载）。
+        asyncio.get_running_loop().create_task(_runner())
+    except RuntimeError:
+        _cdn_backfill_inflight.discard(sid)
+
+
+async def _mirror_to_cdn_for(song: Song, db: Session) -> str | None:
+    """生成完成/后期处理写回后的**同步**回源（在后台任务里 await，不占请求线程）。
+
+    与 `schedule_cdn_backfill` 的分工：
+      · 生成本来就在后台任务里跑（用户不等待），这里顺手做完，新曲第一次被拉取就是 CDN 链接；
+      · 请求路径上的老曲目走 fire-and-forget 的 `schedule_cdn_backfill`。
+    """
+    if not settings.enable_cdn_mirror_on_generate:
+        return None
+    return await cdn_mirror.mirror_song_audio(song, db)
+
+
 def _available_formats(song: Song) -> list[str]:
     """本曲**实际可下载**的格式列表。
 
@@ -235,7 +289,10 @@ def _to_out(
     user_id = user.id if user is not None else None
     owner = bool(user_id is not None and song.user_id == user_id)
     full = can_play_full(user)
-    audio = (song.audio_url or None) if full else (song.preview_audio_url or None)
+    # GAP-019：整曲播放地址优先走自有 CDN（上游 audio_url 会过期）。
+    # ⚠ 门控形状不变：未订阅者拿到的仍然是**片段**（fail-closed，片段缺失就 None），
+    #   只是订阅者的整曲链接从上游换成 CDN —— 换出口不换门。
+    audio = (full_audio_url(song) or None) if full else (song.preview_audio_url or None)
     st = stats or {}
     # 逐字时间轴仅详情接口按需曝光（list/plaza 等高频列表不返——单首 ~10KB JSON 会撑大包体）。
     lyrics_sync_out = song.lyrics_sync if include_sync else None
@@ -582,6 +639,14 @@ async def _finalize_song(song: Song, db: Session, result) -> None:
         sync_song_tags(db, song)
     except Exception as e:  # 标签是增强项，绝不能让它把生成收尾拖进 failed
         log.warning("歌曲 %s 标签抽取失败: %s", getattr(song, "id", "?"), e)
+    # GAP-019：生成完成即回源到自有 CDN（未配 storage 时是 no-op）。
+    # 放在收尾里而不是端点里：所有生成路径（generate/easy/instrumental/region-edit/
+    # spawn）都必经此处，新端点天然继承，不必各自记得调一次。
+    try:
+        if settings.enable_cdn_mirror_on_generate:
+            await _mirror_to_cdn_for(song, db)
+    except Exception as e:  # CDN 是增强项：失败只降级为「仍用上游链接」
+        log.warning("歌曲 %s CDN 回源失败（保持上游链接）: %s", getattr(song, "id", "?"), e)
 
 
 async def _process_song(song_id: int):
@@ -973,6 +1038,8 @@ def explore_songs(
         .offset(offset)
         .all()
     )
+    for s in rows:
+        schedule_cdn_backfill(s)
     return [_to_out(s) for s in rows]
 
 
@@ -1412,6 +1479,7 @@ def get_song(
     owner_id = user.id if user is not None else None
     if song.user_id != owner_id and not song.is_public:
         raise HTTPException(status_code=404, detail="歌曲不存在")
+    schedule_cdn_backfill(song)  # GAP-019：主播放链路按需回填（后台，不阻塞本次响应）
     return _to_out(song, user, include_sync=True)
 
 
@@ -1837,6 +1905,8 @@ def list_songs(
         .offset(offset)
         .all()
     )
+    for s in songs:
+        schedule_cdn_backfill(s)
     return [_to_out(s, user) for s in songs]
 
 
@@ -1945,6 +2015,10 @@ def download_song(
         )
     col, media_type, ext = _AUDIO_FORMATS[fmt]
     source = getattr(song, col, None)
+    if fmt == "mp3":
+        # GAP-010 × GAP-019：mp3 是「整曲」这一份资产，下载同样走 CDN（省出口带宽、
+        # 免上游链接过期 404）。wav/flac 只有上游互链，无 CDN 版本 → 行为不变。
+        source = full_audio_url(song) or source
     if not source:
         # 该曲无此格式（多为上游未返无损链接，或老数据迁移前生成）。
         raise HTTPException(
@@ -1987,7 +2061,9 @@ def preview_audio(
         raise HTTPException(status_code=404, detail="试听片段不可用")
     if song.user_id != user.id and not song.is_public:
         raise HTTPException(status_code=404, detail="试听片段不可用")
-    if not song.audio_url:
+    # GAP-019：试听片段从 CDN 取源（回源对象稳定，不会像上游链接那样过期）。
+    source_url = full_audio_url(song)
+    if not source_url:
         raise HTTPException(status_code=404, detail="试听片段不可用")
 
     cached = _preview_cache_path(song_id)
@@ -1998,7 +2074,7 @@ def preview_audio(
         # [REL] 사용자 대면 경로: 업스트림이 느리면 요청이 무한정 붙잡히므로 전체 상한을 건다
         #       (httpx timeout 은 읽기 간 유휴 기준 → "천천히 꾸준히" 흐르는 응답은 못 막음).
         local_in = download_to_temp(
-            song.audio_url,
+            source_url,
             timeout_total=settings.preview_fetch_timeout,
             max_bytes=int(settings.preview_fetch_max_mb * 1024 * 1024),
         )

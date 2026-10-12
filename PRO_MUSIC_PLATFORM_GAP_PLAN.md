@@ -154,10 +154,24 @@
 - 현황: 웹만. FLOW는 Capacitor 6 Android.
 - 권고: PWA 매니페스트+서비스워커(오프라인/설치), 또는 Capacitor 공용 래핑.
 
-**GAP-019 CDN / 오브젝트 스토리지 / 보관**
-- 현황: 로컬 저장. `audio_cdn_url` 미사용.
-- 영향: 단일 디스크 유실, 지연(중국 디아스포라 타겟).
-- 권고: S3/OSS + CDN, `audio_cdn_url` 채움, 백업/아카이빙 정책.
+**GAP-019 CDN / 오브젝트 스토리지 / 보관** ✅ 已落地（迁移 `i1a2b3c4d5e6`）
+- 현황(旧): 로컬 저장. `audio_cdn_url` 미사용（仅 sync-flow 写，主播放链路仍直连上游）.
+- **已实现**:
+  - **主播放链路优先 CDN**：`app/storage/transport.full_audio_url` = CDN 优先 / 上游兜底；
+    `SongOut.audio_url`、下载（mp3）、试听片段、FLOW 歌单全部走它；
+    生成完成即回源（`_finalize_song`），存量曲目在详情/列表/广场/搜索/explore 上
+    按需 write-behind 回填（`schedule_cdn_backfill`）。
+  - **优雅降级是硬指标**：未配 `storage_*` 或 `audio_cdn_url` 为 NULL → 一律回上游，
+    零 500（prod 当前未配 storage，走的就是这条，有测试钉死）。
+  - **回源逻辑单一实现**：`app/storage/mirror.py`（SSRF 守卫 + 指数退避 + 体积上限 +
+    同键幂等 + 失败返回 None），sync-flow / 播放链路 / 脚本共用同一对象键约定
+    （`app/storage/cdn.py::song_key`）。
+  - **`storage_public_base` 强制走 CDN 域名**：配了就不再暴露源站地址。
+  - **归档 / 保留**：`songs.archived_at` + `songs.storage_class` + `storage_class` /
+    `storage_archive_after_days` / `storage_class_archive` 配置；
+    `scripts/archive_cdn.py`（幂等、可回热、拒绝 GLACIER 类），
+    runbook 见 `docs/CDN_ARCHIVE_RUNBOOK.md`（桶版本化 + 生命周期 + 保留建议）。
+  - **历史回填作业**：`scripts/backfill_cdn.py`（幂等 / 可断点续跑 / 限速 / 未配 storage 早退）。
 
 **GAP-020 사용자 노출 분석**
 - 현황: admin 집계만.

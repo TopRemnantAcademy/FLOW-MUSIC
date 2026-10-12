@@ -554,7 +554,12 @@ def test_migration_gap016_chained_after_gap014_head():
 
 
 def test_migration_gap016_single_head():
-    """升级到 head 后 heads 输出必须是单 head。"""
+    """迁移链全局单 head（GAP-016 引入的断言，链尾已随 GAP-019 前移）。
+
+    ⚠ 本测试**不硬编码某条 revision**，只断言「升级后恰好一个 head」+
+    「链上确实包含 GAP-016 的 h1a2b3c4d5e6」。硬编码链尾的写法会在每次新增
+    迁移时假红，逼着后来者改测试 —— 那是把「守护单 head」变成「记录链尾快照」。
+    """
     import os
     import subprocess
     import sys
@@ -573,7 +578,16 @@ def test_migration_gap016_single_head():
     assert proc.returncode == 0, proc.stderr
     lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
     assert len(lines) == 1, f"应为单 head，实际 {lines}"
-    assert "h1a2b3c4d5e6" in lines[0]
+    # 链上仍包含 GAP-016 的 revision（该迁移没被后来者改写/丢弃）
+    hist = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "history"],
+        cwd=backend,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert hist.returncode == 0, hist.stderr
+    assert "h1a2b3c4d5e6" in hist.stdout
 
 
 def test_moderation_health_exposes_asr_state(client, monkeypatch):

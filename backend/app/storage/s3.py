@@ -46,7 +46,11 @@ def _public_url(key: str) -> str:
 
 
 def upload_bytes(key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
-    """上传字节流并返回公开访问 URL。"""
+    """上传字节流并返回公开访问 URL。
+
+    `ContentType` 必须如实填写（音频写 audio/*）：CDN 边缘按上传时的 ContentType
+    缓存响应头，写错会让 <audio> 直接拒绝播放，且错误响应头会被缓存很久。
+    """
     if not is_configured():
         raise RuntimeError("对象存储未配置")
     _client().put_object(
@@ -58,18 +62,72 @@ def upload_bytes(key: str, data: bytes, content_type: str = "application/octet-s
     return _public_url(key)
 
 
+def upload_file(
+    path: str,
+    key: str,
+    content_type: str = "application/octet-stream",
+    storage_class: str | None = None,
+) -> str:
+    """上传本地文件到 storage_bucket，返回可访问 URL。
+
+    `storage_class` 留空 = 不显式指定（用桶默认）。归档作业（scripts/archive_cdn.py）
+    用它把老歌搬进低频档。
+    """
+    if not is_configured():
+        raise RuntimeError("对象存储未配置")
+    extra: dict = {"ContentType": content_type}
+    if storage_class:
+        extra["StorageClass"] = storage_class
+    _client().upload_file(path, settings.storage_bucket, key, ExtraArgs=extra)
+    return _public_url(key)
+
+
+def upload(path: str, key: str) -> str:
+    """兼容别名：上传本地文件（无显式 ContentType / 存储类别）。
+
+    [GAP-019] 保留该名字是因为既有调用点（`_apply_postprocess` / `_make_preview`）
+    传的是已定型的 mp3 中间产物；新代码请用 `upload_file(path, key, content_type=...,
+    storage_class=...)`，别让「上传」这件事有两种缺省语义。
+    """
+    return upload_file(path, key, content_type="audio/mpeg")
+
+
+def object_exists(key: str) -> bool:
+    """对象是否已在桶里。未配置存储 / 无凭证 / 网络异常一律返回 False（不抛）。
+
+    调用方（回填作业）拿到 False 只会「多上传一次」，是同键幂等覆盖；
+    若在这里抛异常，运维脚本会因为一次瞬时 503 整批中断。
+    """
+    if not is_configured():
+        return False
+    try:
+        _client().head_object(Bucket=settings.storage_bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
+def set_storage_class(key: str, storage_class: str) -> None:
+    """就地改写对象存储类别（归档迁移）。
+
+    S3 兼容实现里改 StorageClass = 「用同一份数据重写一次对象」（原地 copy_Object），
+    不是元数据打标：腾讯云 COS / R2 / MinIO 都支持，但**不可用 GLACIER 类**（见 cdn.py 头注）。
+    """
+    if not is_configured():
+        raise RuntimeError("对象存储未配置")
+    _client().copy_object(
+        Bucket=settings.storage_bucket,
+        Key=key,
+        CopySource={"Bucket": settings.storage_bucket, "Key": key},
+        StorageClass=storage_class,
+        MetadataDirective="COPY",
+    )
+
+
 def delete(key: str) -> None:
     if not is_configured():
         return
     _client().delete_object(Bucket=settings.storage_bucket, Key=key)
-
-
-def upload(path: str, key: str) -> str:
-    """上传本地文件到 storage_bucket，返回可访问 URL。"""
-    if not is_configured():
-        raise RuntimeError("对象存储未配置")
-    _client().upload_file(path, settings.storage_bucket, key)
-    return _public_url(key)
 
 
 def download_to_temp(

@@ -11,8 +11,6 @@
 - 以后若 FLOW APP 有独立后端并要实时推送，可在 _mark_synced 后加 Push 调用（见规划书 14.2/14.3）。
 """
 
-import asyncio
-import httpx
 import logging
 from datetime import timezone
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,7 +21,7 @@ from app.models import Song, SyncRecord, User
 from app.routers.auth import SYNC_FLOW_SCOPE, get_current_user_scoped
 from app.schemas import FlowSongOut, SyncStatusOut
 from app.ratelimit import rate_limit_sync
-from app.security.ssrf import ssrf_guard
+from app.storage import mirror
 from app.storage import s3 as storage
 
 log = logging.getLogger(__name__)
@@ -34,60 +32,49 @@ router = APIRouter(prefix="/api/v1", tags=["flow"])
 
 
 async def _ensure_cdn_url(song: Song, db: Session) -> str:
-    """确保歌曲有稳定的 CDN 播放链接；没有则回源。"""
+    """确保歌曲有稳定的 CDN 播放链接；没有则回源。
+
+    ⚠ 回源逻辑本体已抽到 `app.storage.mirror`（GAP-019）：主播放链路按需回填、
+    FLOW 同步、历史回填脚本必须共用**同一个对象键 + 同一套重试/降级**，否则
+    同曲两份对象、脚本永远认为「没回填过」。
+
+    降级契约（硬指标）：未配对象存储或回源失败 → 返回上游 `audio_url`（可能过期，
+    但绝不 500）。prod 未配 `storage_*` 时走的就是这条。
+    """
     if song.audio_cdn_url:
         return song.audio_cdn_url
     if not storage.is_configured():
-        # MVP 降级：未配置对象存储时直接用 Suno 原始链接（不稳定，仅本地验证）
+        # MVP 降级：未配置对象存储时直接用上游原始链接（不稳定，仅本地验证）
         log.warning(
-            "S3 storage not configured; serving volatile Suno original URL (audio_url) "
+            "S3 storage not configured; serving volatile upstream URL (audio_url) "
             "for song %s — unstable/expiring, configure storage for a stable CDN URL (🔴2)",
             song.id,
         )
         return song.audio_url
     if not song.audio_url:
         raise ValueError("歌曲尚无音频链接")
-    # [SEC] X6/T6.4b: song.audio_url 은 사용자 영향 값 — 서버 측 fetch 전 내부/링크로컬/
-    # 클라우드 메타데이터(169.254.169.254) 주소 인출을 가드로 차단(SSRF, fail-closed).
-    ssrf_guard.guard(song.audio_url)
-    # [RES] T8.6c — 네트워크 분할(§11.9 6행) 복구용 지수 백오프 재시도.
-    # 경계 타임아웃(timeout=60) 단독으로는 무한 대기만 막지, 일시적 분할 복구 시
-    # 재시도가 없으면 동기화가 영구 실패한다. 지수 백오프로 복구 시도.
-    max_attempts = 4
-    backoff_base = 0.5  # 초 — 지수 증가: 0.5, 1, 2, 4 ...
-    last_exc = None
-    data = None
-    # [SEC] H5(2026-09-13): safe_fetch 는 가드 통과 호스트를 **한 번만 해석해 IP 핀ning**
-    # 하므로, guard() 후 httpx 가 다시 DNS 를 해석하는 TOCTOU(DNS-rebinding) 창이 없다.
-    # 클라이언트는 루프 밖에서 1회 생성해 재사용한다(호출마다 신규 생성 시 DNS/TLS 폭풍).
-    async with httpx.AsyncClient(timeout=60) as c:
-        for attempt in range(max_attempts):
-            try:
-                r = await ssrf_guard.safe_fetch(song.audio_url, client=c, timeout=60)
-                data = r.content
-                break
-            except Exception as e:  # 일시적 분할/오류 → 백오프 후 재시도
-                last_exc = e
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(backoff_base * (2**attempt))
-    if data is None:
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("audio fetch failed")
-    key = f"songs/{song.user_id}/{song.id}.mp3"
-    url = storage.upload_bytes(key, data, content_type="audio/mpeg")
-    song.audio_cdn_url = url
-    db.commit()
-    return url
+    mirrored = await mirror.mirror_song_audio(song, db)
+    if mirrored:
+        return mirrored
+    # 回源失败：不抛给 APK（宁可给易失链接，也不要歌单整段失败）。
+    log.warning(
+        "CDN mirror failed for song %s; falling back to volatile upstream URL", song.id
+    )
+    return song.audio_url
 
 
-def _mark_synced(song: Song, db: Session) -> SyncRecord:
+def _mark_synced(song: Song, db: Session, *, play_url: str | None = None) -> SyncRecord:
+    """落同步记录。`play_url` = 本次实际下发给 APK 的链接（CDN 优先，降级为上游）。
+
+    只在它确实是**CDN 链接**时才写回 `song.audio_cdn_url`：把易失的上游链接塞进
+    「CDN 字段」会让「已回源」这件事变成谎话，回填脚本也永远发现不了它需要重做。
+    """
     rec = db.query(SyncRecord).filter_by(user_id=song.user_id, song_id=song.id).first()
     if not rec:
         rec = SyncRecord(user_id=song.user_id, song_id=song.id)
         db.add(rec)
     rec.status = "synced"
-    rec.audio_cdn_url = song.audio_cdn_url
+    rec.audio_cdn_url = play_url or song.audio_cdn_url
     db.commit()
     db.refresh(rec)
     song.synced_to_flow = True
@@ -118,14 +105,17 @@ async def sync_to_flow(
         return SyncStatusOut(sync_id=rec.id, status="synced", audio_cdn_url=rec.audio_cdn_url)
 
     try:
-        await _ensure_cdn_url(song, db)
+        # GAP-019：回源得到的「实际可播放链接」必须**带下去**，不能只依赖
+        # `song.audio_cdn_url` —— 未配 storage 的降级路径根本不写这一列（写下游链接进
+        # CDN 字段会污染「已回源」的事实），此时丢返回值就等于给 APK 一个空链接。
+        play_url = await _ensure_cdn_url(song, db)
     except Exception:
         if rec:
             rec.status = "failed"
             db.commit()
         raise HTTPException(status_code=502, detail="音频回源失败，请重试")
 
-    rec = _mark_synced(song, db)
+    rec = _mark_synced(song, db, play_url=play_url)
     return SyncStatusOut(sync_id=rec.id, status="synced", audio_cdn_url=rec.audio_cdn_url)
 
 

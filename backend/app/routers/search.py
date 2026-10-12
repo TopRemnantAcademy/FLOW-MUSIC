@@ -25,7 +25,12 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Song, SongTag, Tag, User
 from app.routers.plaza import _public_filters, get_optional_user
-from app.routers.songs import _author_names, _interaction_stats, _to_out
+from app.routers.songs import (
+    _author_names,
+    _interaction_stats,
+    _to_out,
+    schedule_cdn_backfill,
+)
 from app.schemas import SimilarSongOut, SongOut, TagOut
 from app.search import service as tag_service
 
@@ -85,6 +90,8 @@ def _serialize(db: Session, songs: list[Song], user: Optional[User]) -> list[Son
     for s in songs:
         st = dict(stats.get(s.id) or {})
         st["author_name"] = names.get(s.user_id)
+        # GAP-019：搜索/推荐结果同样可起播 → 排后台回源（未配 storage 时 no-op）。
+        schedule_cdn_backfill(s)
         out.append(_to_out(s, user, st))
     return out
 

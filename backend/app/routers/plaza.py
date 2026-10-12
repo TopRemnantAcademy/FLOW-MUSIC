@@ -25,7 +25,7 @@ from jose import jwt
 from app.db import get_db
 from app.models import Song, SongFavorite, SongLike, SongRating, User
 from app.routers.auth import get_current_user
-from app.routers.songs import _interaction_stats, _to_out
+from app.routers.songs import _interaction_stats, _to_out, schedule_cdn_backfill
 from app.schemas import SongOut
 
 router = APIRouter(prefix="/api/plaza", tags=["plaza"])
@@ -84,6 +84,9 @@ def _serialize(song: Song, db: Session, user: Optional[User]) -> SongOut:
         from app.routers.songs import _author_names
 
         st["author_name"] = _author_names(db, [song.user_id]).get(song.user_id)
+    # GAP-019：广场是主播放链路的一部分（匿名听众在此起播）——
+    # 没有稳定 CDN 链接的曲目在这里排一次后台回源（未配 storage 时为 no-op）。
+    schedule_cdn_backfill(song)
     return _to_out(song, user, st)
 
 
@@ -167,6 +170,9 @@ def list_plaza(
     for s in songs:
         st = dict(stats.get(s.id) or {})
         st["author_name"] = names.get(s.user_id)
+        # GAP-019：广场是主播放链路的一部分（匿名听众在此起播）——
+        # 没有稳定 CDN 链接的曲目在这里排一次后台回源（未配 storage 时为 no-op）。
+        schedule_cdn_backfill(s)
         out.append(_to_out(s, user, st))
     return out
 
