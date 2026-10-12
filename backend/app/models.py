@@ -459,3 +459,73 @@ class TrashKeepRule(Base):
     id = Column(Integer, primary_key=True, index=True)
     keep_days = Column(Integer, default=30, nullable=False, server_default=text("30"))
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GAP-014 搜索 / 发现：结构化标签（Tag / SongTag）
+#
+# 设计取舍（结论先行，理由见各模型注释）：
+#   · Tag 是**实体表**而不是每首歌自带 keywords 列 —— 标签的价值在「多对多」，
+#     一个词要能反查到一批歌；把标签塞进 Song 的 Text 列会让「按标签浏览」
+#     退化成每首歌一次 LIKE 全表扫。
+#   · Tag 有 (category, value) 唯一约束 —— 同义词必须归并到一个规范值，
+#     否则 `伤感` 与 `sad` 各自成标签，浏览面被切成两半。
+#   · SongTag 存 `source`（auto/manual/enum）：标签是抽取来的，抽取规则会演进，
+#     没有来源就永远说不清「这个标签是哪一版规则加上去的」，重算时也不敢覆盖用户手写的。
+#   · 相似推荐**不建 embedding 表**：评估结论见 app/search/similar.py 头部
+#     （不臆造向量字段；标签重合 + BM25 已覆盖当前语料规模）。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class Tag(Base):
+    """结构化标签：曲风 / 情绪 / 语言 / 声部 / 形式。
+
+    `(category, value)` 唯一 —— value 是**规范值**（如 `sad` 而非 `伤感`），
+    变体词写进 `aliases` 供抽取层查找。这样前端拿到的永远是同一套词，
+    而抽取层可以持续补同义词而不产生新标签。
+
+    `usage_count` 是**冗余计数**而非实时 count(*)：
+    标签列表端点要按热度排 chip，而 count 需要 JOIN 全表 song_tags ——
+    这是典型的读多写少，用一列计数换掉每次浏览的一次全表聚合。
+    ⚠ 代价：它必须与 song_tags 同步（由 app/search/service.py:sync_song_tags 单一入口维护）。
+    """
+
+    __tablename__ = "tags"
+    __table_args__ = (
+        UniqueConstraint("category", "value", name="uq_tags_category_value"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    # genre | mood | language | vocal | form（见 app/search/tags.py:VALID_CATEGORIES）
+    category = Column(String(16), nullable=False, index=True)
+    value = Column(String(32), nullable=False)  # 规范值（小写/拉丁）
+    label = Column(String(64), nullable=False, default="")  # 展示名（可含中文）
+    aliases = Column(Text, nullable=False, default="")  # 逗号分隔的变体词（抽取用）
+    usage_count = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SongTag(Base):
+    """歌曲 ↔ 标签 关联。
+
+    `source` 记录标签来源：
+      · auto   —— 从 style/prompt/title 抽取（规则演进时可安全重算）
+      · enum   —— 由结构化列映射（vocal_gender / make_instrumental / content_category）
+      · manual —— 用户或后台显式写入（重算时**不得覆盖**，那是人的判断）
+
+    ⚠ 唯一约束含 `source`：同一首歌的同一个标签可能同时来自 enum 与 manual
+    （用户手动确认了"纯音乐"），两条都保留比强行合并更诚实 ——
+    合并后 source 就只剩一个，谁写的就说不清了。
+    """
+
+    __tablename__ = "song_tags"
+    __table_args__ = (
+        UniqueConstraint("song_id", "tag_id", "source", name="uq_song_tags_song_tag_source"),
+        Index("ix_song_tags_tag_song", "tag_id", "song_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    song_id = Column(Integer, ForeignKey("songs.id"), index=True, nullable=False)
+    tag_id = Column(Integer, ForeignKey("tags.id"), index=True, nullable=False)
+    source = Column(String(8), nullable=False, default="auto")  # auto | enum | manual
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

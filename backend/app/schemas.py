@@ -465,3 +465,25 @@ class FlowExchangeResp(BaseModel):
     access_token: str
     token_type: str = "bearer"
     scope: str = "sync:flow"
+
+
+# ---------- GAP-014 搜索 / 发现 ----------
+class TagOut(BaseModel):
+    """结构化标签（标签浏览的候选与展示单元）。"""
+
+    id: int
+    category: str  # genre | mood | language | vocal | form
+    value: str  # 规范值（拉丁，如 guofeng / sad）
+    label: str  # 展示名（可含中文）
+    usage_count: int = 0  # 挂了多少首公开曲（冗余计数，见 models.Tag 注释）
+
+
+class SimilarSongOut(SongOut):
+    """相似推荐结果 = 歌曲 + **为什么被推荐**。
+
+    `reasons` 不是装饰：不给理由的相似推荐无法被用户验证，也无法被前端解释成 chip。
+    值为命中的标签对（`genre:guofeng`）。空列表表示仅凭文本相似入选（无共享标签）。
+    """
+
+    reasons: list[str] = []
+    similarity: float = 0  # 排序分（标签加分 + 归一化 BM25），仅用于展示排序稳定，非概率

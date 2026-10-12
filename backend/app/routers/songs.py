@@ -66,6 +66,7 @@ from app.wallet_track import (
     release_wallet_track,
     get_held_reservation_by_job,
 )
+from app.search.service import sync_song_tags
 from app.services.prompt_assist import optimize_lyrics, optimize_style
 from app.schemas import (
     GenerateReq,
@@ -544,6 +545,14 @@ async def _finalize_song(song: Song, db: Session, result) -> None:
         song.moderation_status = "rejected"
         if result.moderation_note:
             song.moderation_note = result.moderation_note
+    # GAP-014：按**最终**文本建结构化标签。
+    # ⚠ 必须放在这里（而不是建曲时）：title/lyric/style 在完成时会被上游结果覆盖，
+    #   提前建的标签会与最终内容不符，且完成时还得再算一次（写两次、错一次）。
+    # 只对 completed 生效（sync_song_tags 内部再判一次，双保险）；失败不影响主流程。
+    try:
+        sync_song_tags(db, song)
+    except Exception as e:  # 标签是增强项，绝不能让它把生成收尾拖进 failed
+        log.warning("歌曲 %s 标签抽取失败: %s", getattr(song, "id", "?"), e)
 
 
 async def _process_song(song_id: int):
