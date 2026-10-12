@@ -30,6 +30,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
+from migrations._offline import inspector_or_none
+
 # revision identifiers, used by Alembic.
 revision: str = "b8e4f1a2c3d7"
 down_revision: Union[str, Sequence[str], None] = "c3d4e5f7a8b9"
@@ -83,12 +85,24 @@ def _rebuild_user_links(*, drop_fk: bool) -> None:
     bind.exec_driver_sql("CREATE INDEX ix_user_links_id ON user_links (id)")
 
 
+# d4e5f6a7b8c9 는 FK 를 `sa.ForeignKey("users.id")` 로 **인라인** 생성했다 →
+# 리비전 파일에 이름이 박혀 있지 않고, PG 가 기본 규칙 `<table>_<col>_fkey` 로 자동 명명한다.
+# offline(`--sql`) 에서는 반사(reflection)가 불가하므로 이 결정적 이름으로 지운다.
+_PG_DEFAULT_FK_NAME = "user_links_music_user_id_fkey"
+
+
 def upgrade() -> None:
     if _is_sqlite():
         _rebuild_user_links(drop_fk=True)
         return
-    # Postgres 등: FK 를 이름으로 제거할 수 있다(d4e5f6a7b8c9 가 자동 명명).
-    for fk in sa.inspect(op.get_bind()).get_foreign_keys("user_links"):
+    # Postgres 등: FK 를 이름으로 제거.
+    # online  → 반사로 실제 이름을 확보(가장 정확).
+    # offline → 반사 불가 → PG 기본 명명 규칙으로 폴백해 DDL 을 렌더(#106 验收 b).
+    inspector = inspector_or_none()
+    if inspector is None:
+        op.drop_constraint(_PG_DEFAULT_FK_NAME, "user_links", type_="foreignkey")
+        return
+    for fk in inspector.get_foreign_keys("user_links"):
         if fk.get("referred_table") == "users" and fk.get("constrained_columns") == ["music_user_id"]:
             if fk.get("name"):
                 op.drop_constraint(fk["name"], "user_links", type_="foreignkey")

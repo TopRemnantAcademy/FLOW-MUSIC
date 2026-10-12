@@ -27,13 +27,13 @@ depends_on: Union[str, Sequence[str], None] = None
 # (列名, 类型, 是否可空, server_default) —— 与 app/models.py 严格一一对应，
 # 以通过 tests/test_alembic.py 的「模型 ↔ 迁移零漂移」断言。
 NEW_COLUMNS: Sequence[tuple[str, sa.types.TypeEngine, bool, object]] = (
-    ("email_verified", sa.Boolean(), False, sa.text("0")),
+    ("email_verified", sa.Boolean(), False, sa.false()),
     ("verify_token", sa.String(64), True, None),
     ("verify_sent_at", sa.DateTime(timezone=True), True, None),
     ("reset_token", sa.String(64), True, None),
     ("reset_sent_at", sa.DateTime(timezone=True), True, None),
     ("mfa_secret", sa.String(64), True, None),
-    ("mfa_enabled", sa.Boolean(), False, sa.text("0")),
+    ("mfa_enabled", sa.Boolean(), False, sa.false()),
     ("failed_logins", sa.Integer(), False, sa.text("0")),
     ("locked_until", sa.DateTime(timezone=True), True, None),
 )

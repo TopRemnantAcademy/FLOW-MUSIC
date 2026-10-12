@@ -42,6 +42,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
+from migrations._offline import inspector_or_none
+
 # revision identifiers, used by Alembic.
 revision: str = "b9c1d2e3f4a5"
 down_revision: Union[str, Sequence[str], None] = "a7f3c91d4e62"
@@ -53,7 +55,14 @@ _TABLE = "pricing_tiers"
 
 
 def _has_index(name: str) -> bool:
-    inspector = sa.inspect(op.get_bind())
+    """该索引是否已存在。
+
+    offline（`--sql`）下无反射 → 视为「不存在」，从而渲染出 create_index
+    而跳过 drop_index（不产出破坏性语句）。
+    """
+    inspector = inspector_or_none()
+    if inspector is None:
+        return False
     return any(ix["name"] == name for ix in inspector.get_indexes(_TABLE))
 
 

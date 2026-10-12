@@ -12,6 +12,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    false,
+    text,
+    true,
 )
 
 from app.db import Base
@@ -32,7 +35,7 @@ class User(Base):
     # ---- GAP-002 邮箱验证 / 密码重置 / MFA / 失败锁定 ----
     # 验证与重置 token **只存 sha256 摘要**：明文仅出现在邮件链接里，DB 备份或日志
     # 泄露也换不出可用 token（存明文 = 任何一次库泄露都等于账号接管）。
-    email_verified = Column(Boolean, default=False, nullable=False, server_default="0")
+    email_verified = Column(Boolean, default=False, nullable=False, server_default=false())
     verify_token = Column(String(64), nullable=True)  # 邮箱验证 token 的 sha256 摘要
     verify_sent_at = Column(DateTime(timezone=True), nullable=True)  # 上次发信时刻（重发冷却）
     reset_token = Column(String(64), nullable=True)  # 密码重置 token 的 sha256 摘要
@@ -40,8 +43,8 @@ class User(Base):
     mfa_secret = Column(String(64), nullable=True)  # TOTP base32 密钥；永不进任何响应模型
     # 与 mfa_secret 拆成两列：绑定必须 setup→enable 两步确认。若以「secret 非空」当启用开关，
     # 用户扫错码的那一刻就把自己锁在门外（无法登录、也无法自行关闭）。
-    mfa_enabled = Column(Boolean, default=False, nullable=False, server_default="0")
-    failed_logins = Column(Integer, default=0, nullable=False, server_default="0")  # 连续失败计数
+    mfa_enabled = Column(Boolean, default=False, nullable=False, server_default=false())
+    failed_logins = Column(Integer, default=0, nullable=False, server_default=text("0"))  # 连续失败计数
     locked_until = Column(DateTime(timezone=True), nullable=True)  # 账户锁定截止时刻
 
     # GAP-003 OAuth 身份绑定（Google / Kakao / Naver 授权码登录）。
@@ -108,10 +111,10 @@ class Song(Base):
     moderation_status = Column(String(32), default="pending")  # pending|approved|rejected 人工复核
     moderation_note = Column(Text, default="")  # 驳回原因
     is_public = Column(
-        Boolean, default=False, server_default="false", nullable=False
+        Boolean, default=False, server_default=false(), nullable=False
     )  # 是否公开到发现页
     play_count = Column(
-        Integer, default=0, server_default="0", nullable=False
+        Integer, default=0, server_default=text("0"), nullable=False
     )  # 播放次数（发现页排序）
     vocal_gender = Column(
         String(16), nullable=True
@@ -245,14 +248,14 @@ class EngineConfig(Base):
         String(32), primary_key=True
     )  # suno/mock/musicgen/ace_step_private/tencent_mps/volcano
     display_name = Column(String(64), default="")
-    enabled = Column(Boolean, default=True, nullable=False, server_default="1")
-    is_default = Column(Boolean, default=False, nullable=False, server_default="0")
+    enabled = Column(Boolean, default=True, nullable=False, server_default=true())
+    is_default = Column(Boolean, default=False, nullable=False, server_default=false())
     api_base = Column(String(512), default="")
     api_key = Column(String(512), default="")  # 仅管理员可写；存储时为密文(GAP-007)，GET 脱敏
     cost_per_song_cny = Column(
-        Numeric(10, 4), default=0, nullable=False, server_default="0"
+        Numeric(10, 4), default=0, nullable=False, server_default=text("0")
     )  # 估算成本（成本报表/计费回退）
-    priority = Column(Integer, default=0, nullable=False, server_default="0")
+    priority = Column(Integer, default=0, nullable=False, server_default=text("0"))
     notes = Column(Text, default="")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -284,8 +287,8 @@ class RoutingRule(Base):
         String(32), nullable=False, index=True
     )  # general|christian_worship|instrumental
     provider = Column(String(32), nullable=False)  # 指向 engine_configs.provider
-    priority = Column(Integer, default=0, nullable=False, server_default="0")
-    enabled = Column(Boolean, default=True, nullable=False, server_default="1")
+    priority = Column(Integer, default=0, nullable=False, server_default=text("0"))
+    enabled = Column(Boolean, default=True, nullable=False, server_default=true())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -305,17 +308,17 @@ class PricingTier(Base):
     )  # free|lite|standard|sacred|enterprise
     tier_name = Column(String(64), default="")
     engine_provider = Column(String(32), nullable=True)  # 该套餐默认引擎（None=按路由规则）
-    price_cny = Column(Numeric(10, 4), default=0, nullable=False, server_default="0")
+    price_cny = Column(Numeric(10, 4), default=0, nullable=False, server_default=text("0"))
     # step-2 多币种: 各币种标价的套餐价; 缺省 0 → 结账时按 fx_rate_* 由 CNY 换算.
-    price_usd = Column(Numeric(10, 4), default=0, nullable=False, server_default="0")
-    price_krw = Column(Numeric(10, 4), default=0, nullable=False, server_default="0")
-    credits_per_song = Column(Integer, default=1, nullable=False, server_default="1")
+    price_usd = Column(Numeric(10, 4), default=0, nullable=False, server_default=text("0"))
+    price_krw = Column(Numeric(10, 4), default=0, nullable=False, server_default=text("0"))
+    credits_per_song = Column(Integer, default=1, nullable=False, server_default=text("1"))
     # 该档位绑定的生成模型（如 mureka-7.6 / mureka-9）。空 = 用引擎默认模型(settings.mureka_model)。
     # ⚠ 저가 티어(lite) 는 "값싼 모델 바인딩" 으로만 진짜 원가절감이 된다 —
     #   가격만 내리고 모델을 안 바꾸면 원가가 그대로여서 마진이 음수로 뒤집힌다.
     model_version = Column(String(64), default="", nullable=True)
     description = Column(Text, default="")
-    enabled = Column(Boolean, default=True, nullable=False, server_default="1")
+    enabled = Column(Boolean, default=True, nullable=False, server_default=true())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -366,7 +369,7 @@ class Playlist(Base):
     name = Column(String(255), nullable=False, default="未命名歌单")
     description = Column(Text, default="")
     cover_url = Column(Text, default="")  # 可为空：前端未上传时回退用首曲封面
-    is_public = Column(Boolean, default=False, server_default="false", nullable=False)
+    is_public = Column(Boolean, default=False, server_default=false(), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -393,7 +396,7 @@ class PlaylistSong(Base):
         Integer, ForeignKey("playlists.id", ondelete="CASCADE"), index=True, nullable=False
     )
     song_id = Column(Integer, ForeignKey("songs.id"), index=True, nullable=False)
-    position = Column(Integer, default=0, nullable=False, server_default="0")
+    position = Column(Integer, default=0, nullable=False, server_default=text("0"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -454,5 +457,5 @@ class TrashKeepRule(Base):
     __tablename__ = "trash_keep_rules"
 
     id = Column(Integer, primary_key=True, index=True)
-    keep_days = Column(Integer, default=30, nullable=False, server_default="30")
+    keep_days = Column(Integer, default=30, nullable=False, server_default=text("30"))
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

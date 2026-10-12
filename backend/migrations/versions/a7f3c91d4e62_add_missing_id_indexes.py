@@ -24,6 +24,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
+from migrations._offline import inspector_or_none
+
 # revision identifiers, used by Alembic.
 revision: str = "a7f3c91d4e62"
 down_revision: Union[str, Sequence[str], None] = "b2c3d4e5f8a1"
@@ -41,8 +43,14 @@ MISSING_INDEXES: Sequence[tuple[str, str, str, bool]] = (
 
 
 def _existing_indexes() -> set[tuple[str, str]]:
-    """返回 {(表名, 索引名)} 现状，用于幂等跳过已存在的索引。"""
-    inspector = sa.inspect(op.get_bind())
+    """返回 {(表名, 索引名)} 现状，用于幂等跳过已存在的索引。
+
+    offline（`--sql`）下无反射能力 → 返回空集，即「按都不存在渲染」，
+    使 create_index 出现在离线 SQL 里（#106 验收 b）。
+    """
+    inspector = inspector_or_none()
+    if inspector is None:
+        return set()
     found: set[tuple[str, str]] = set()
     for table in inspector.get_table_names():
         for index in inspector.get_indexes(table):

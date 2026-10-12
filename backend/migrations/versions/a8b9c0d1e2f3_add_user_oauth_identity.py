@@ -27,6 +27,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
+from migrations._offline import inspector_or_none
+
 # revision identifiers, used by Alembic.
 revision: str = "a8b9c0d1e2f3"
 down_revision: Union[str, Sequence[str], None] = "b8e4f1a2c3d7"
@@ -39,9 +41,14 @@ def upgrade() -> None:
     #   SQLite 方言**不支持** ALTER 约束（原报错 "No support for ALTER of constraints
     #   in SQLite dialect"），batch 模式以「建新表→拷数据→换名」实现，SQLite/Postgres 通用。
     #   （测试库与开发默认库都是 SQLite，这条不是可选项。）
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    existing = {uc["name"] for uc in inspector.get_unique_constraints("users")}
+    inspector = inspector_or_none()
+    # offline（`--sql`）无反射 → 视为「约束不存在」，照常渲染 create_constraint，
+    # 使离线 SQL 包含该唯一约束（#106 验收 b）。
+    existing = (
+        {uc["name"] for uc in inspector.get_unique_constraints("users")}
+        if inspector is not None
+        else set()
+    )
     with op.batch_alter_table("users", schema=None) as batch_op:
         batch_op.add_column(sa.Column("oauth_provider", sa.String(length=32), nullable=True))
         batch_op.add_column(sa.Column("oauth_sub", sa.String(length=255), nullable=True))
@@ -54,8 +61,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    inspector = sa.inspect(op.get_bind())
-    existing = {uc["name"] for uc in inspector.get_unique_constraints("users")}
+    inspector = inspector_or_none()
+    existing = (
+        {uc["name"] for uc in inspector.get_unique_constraints("users")}
+        if inspector is not None
+        else set()
+    )
     with op.batch_alter_table("users", schema=None) as batch_op:
         if "uq_users_oauth_identity" in existing:
             batch_op.drop_constraint("uq_users_oauth_identity", type_="unique")

@@ -30,7 +30,7 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=False),
         sa.Column("provider", sa.String(32), nullable=False),
         sa.Column("tier_key", sa.String(32), nullable=False),
-        sa.Column("amount_cny", sa.Numeric(10, 2), nullable=False, server_default="0"),
+        sa.Column("amount_cny", sa.Numeric(10, 2), nullable=False, server_default=sa.text("0")),
         sa.Column("currency", sa.String(8), nullable=False, server_default="CNY"),
         sa.Column("status", sa.String(16), nullable=False, server_default="pending"),
         sa.Column("provider_order_id", sa.String(255), nullable=True),
@@ -61,7 +61,7 @@ def upgrade() -> None:
         sa.Column("provider_subscription_id", sa.String(255), nullable=True),
         sa.Column("current_period_start", sa.DateTime(timezone=True), nullable=True),
         sa.Column("current_period_end", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("cancel_at_period_end", sa.Boolean(), nullable=False, server_default="0"),
+        sa.Column("cancel_at_period_end", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column(
             "updated_at",

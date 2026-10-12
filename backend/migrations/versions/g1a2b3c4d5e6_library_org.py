@@ -53,7 +53,7 @@ def upgrade() -> None:
         sa.Column("name", sa.String(length=255), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("cover_url", sa.Text(), nullable=True),
-        sa.Column("is_public", sa.Boolean(), server_default="false", nullable=False),
+        sa.Column("is_public", sa.Boolean(), server_default=sa.false(), nullable=False),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True
         ),
@@ -71,7 +71,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("playlist_id", sa.Integer(), nullable=False),
         sa.Column("song_id", sa.Integer(), nullable=False),
-        sa.Column("position", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("position", sa.Integer(), server_default=sa.text("0"), nullable=False),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True
         ),
@@ -126,7 +126,7 @@ def upgrade() -> None:
     op.create_table(
         "trash_keep_rules",
         sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("keep_days", sa.Integer(), server_default="30", nullable=False),
+        sa.Column("keep_days", sa.Integer(), server_default=sa.text("30"), nullable=False),
         sa.Column(
             "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=True
         ),

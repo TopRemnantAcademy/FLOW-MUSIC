@@ -3,7 +3,18 @@
 匹配 app/models.py 的 SQLAlchemy 1.x Column 风格.
 """
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    false,
+    func,
+)
 
 from app.db import Base
 
@@ -57,6 +68,6 @@ class Subscription(Base):
     provider_customer_id = Column(String(255), nullable=True, index=True)
     current_period_start = Column(DateTime(timezone=True), nullable=True)
     current_period_end = Column(DateTime(timezone=True), nullable=True)
-    cancel_at_period_end = Column(Boolean, default=False, nullable=False, server_default="0")
+    cancel_at_period_end = Column(Boolean, default=False, nullable=False, server_default=false())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

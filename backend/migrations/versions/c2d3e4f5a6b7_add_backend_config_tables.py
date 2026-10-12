@@ -24,12 +24,17 @@ def upgrade() -> None:
         "engine_configs",
         sa.Column("provider", sa.String(32), primary_key=True),
         sa.Column("display_name", sa.String(64), server_default=""),
-        sa.Column("enabled", sa.Boolean(), nullable=False, server_default="1"),
-        sa.Column("is_default", sa.Boolean(), nullable=False, server_default="0"),
+        sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.Column("is_default", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("api_base", sa.String(512), server_default=""),
         sa.Column("api_key", sa.String(512), server_default=""),
-        sa.Column("cost_per_song_cny", sa.Numeric(10, 4), nullable=False, server_default="0"),
-        sa.Column("priority", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column(
+            "cost_per_song_cny",
+            sa.Numeric(10, 4),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column("priority", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("notes", sa.Text(), server_default=""),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column(
@@ -44,8 +49,8 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("category", sa.String(32), nullable=False),
         sa.Column("provider", sa.String(32), nullable=False),
-        sa.Column("priority", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("enabled", sa.Boolean(), nullable=False, server_default="1"),
+        sa.Column("priority", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
     op.create_index("ix_routing_rules_category", "routing_rules", ["category"])
@@ -55,10 +60,10 @@ def upgrade() -> None:
         sa.Column("tier_key", sa.String(32), unique=True, nullable=False),
         sa.Column("tier_name", sa.String(64), server_default=""),
         sa.Column("engine_provider", sa.String(32), nullable=True),
-        sa.Column("price_cny", sa.Numeric(10, 4), nullable=False, server_default="0"),
-        sa.Column("credits_per_song", sa.Integer(), nullable=False, server_default="1"),
+        sa.Column("price_cny", sa.Numeric(10, 4), nullable=False, server_default=sa.text("0")),
+        sa.Column("credits_per_song", sa.Integer(), nullable=False, server_default=sa.text("1")),
         sa.Column("description", sa.Text(), server_default=""),
-        sa.Column("enabled", sa.Boolean(), nullable=False, server_default="1"),
+        sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
 

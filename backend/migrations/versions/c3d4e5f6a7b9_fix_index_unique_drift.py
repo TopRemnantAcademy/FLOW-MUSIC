@@ -50,6 +50,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
+from migrations._offline import inspector_or_none, is_offline
+
 # revision identifiers, used by Alembic.
 revision: str = "c3d4e5f6a7b9"
 down_revision: Union[str, Sequence[str], None] = "b9c1d2e3f4a5"
@@ -60,17 +62,33 @@ _FILE_ANCHOR_NOTE = "本迁移与 b9c1d2e3f4a5 共同收敛「unique+index 双�
 
 
 def _indexes(table: str) -> dict[str, dict]:
-    return {ix["name"]: ix for ix in sa.inspect(op.get_bind()).get_indexes(table)}
+    """现存索引 {名: 描述}。offline（`--sql`）下无反射 → 空 dict。
+
+    空 dict 的效果：一律走「索引不存在」分支 → 渲染 create_index、
+    跳过 drop_index（不产出破坏性语句），符合离线审计的语义。
+    """
+    insp = inspector_or_none()
+    if insp is None:
+        return {}
+    return {ix["name"]: ix for ix in insp.get_indexes(table)}
 
 
 def _unique_constraints(table: str) -> list[dict]:
-    insp = sa.inspect(op.get_bind())
+    insp = inspector_or_none()
+    if insp is None:
+        return []
     getter = getattr(insp, "get_unique_constraints", None)
     return getter(table) if getter else []
 
 
 def _assert_no_duplicate_idempotency_keys() -> None:
-    """补唯一性之前先验数据。有重复 → 显式报错，不做静默处理。"""
+    """补唯一性之前先验数据。有重复 → 显式报错，不做静默处理。
+
+    offline（`--sql`）无法查数据：离线渲染的产物不直接执行（由人在真实库上
+    跑 online），故此处跳过数据校验 —— 校验仍会在真实 online 升级时生效。
+    """
+    if is_offline():
+        return
     bind = op.get_bind()
     dup = bind.execute(
         sa.text(
