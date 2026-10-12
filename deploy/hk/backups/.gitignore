@@ -1,0 +1,6 @@
+# schema-cutover.sh 的时间戳 pg_dump 备份落盘在此目录。
+# 备份含生产数据，**绝不能入库**。
+*.sql
+*.sql.gz
+*.dump
+!.gitignore

@@ -79,10 +79,102 @@ bootstrap 会自动注入 `https://$MUSIC_DOMAIN`；换域名必须**重新构�
 | `restore.sh` | `backup.sh` 的逆操作：停服 → 原子替换 → 起服；恢复前先备份当前库、恢复前校验待恢复文件完整性 |
 | `crontab.example` | 备份 / 镜像清理 / 出口定时探测 |
 | `selftest.sh` | bootstrap 的 **mock 自检**（不装 Docker/不联网）：8 组用例 / 38 项断言 |
+| `sync-code.sh` | **代码同步**：`rsync --delete` 镜像语义（无 rsync 则退化），同步后按 `git ls-tree` 自检多了/少了，差异即非零退出；支持 `--dry-run` |
+| `schema-cutover.sh` | **PG schema 切换**：备份 → 停应用 → `DROP SCHEMA` → `alembic upgrade head` → 起应用 → 校验；`users`/`songs` 非空时默认拒绝，需 `--force`；支持 `--dry-run` |
+| `backups/` | `schema-cutover.sh` 的时间戳 `pg_dump` 落盘目录（`.gitignore`，不入库） |
 | `flow/bootstrap.sh` | FLOW(CCM) **共置部署引导**（复用 FLOW 自带 compose/Caddy）：LLM 凭据 fail-closed 闸门 + 构建启动 + 健康检查 |
 | `flow/env.prod.example` | FLOW 生产 `.env` 模板（LLM / Qdrant / 密钥 / 共置 / 杂项 5 段，不含真实密钥） |
 | `flow/README.md` | FLOW 脚手架说明：硬阻塞 / 共置冲突 / 部署步骤 / 启用 Let's Encrypt |
 | `flow/selftest.sh` | FLOW bootstrap 的 **mock 自检**：15 组用例 / 48 项断言（凭据闸门的回归门禁） |
+
+---
+
+## 代码同步与 schema 迁移
+
+这两个动作各自踩过一次生产坑（ISSUE #107 记录），所以都脚本化了。
+**结论先行：用 `sync-code.sh` 同步代码，用 `schema-cutover.sh` 切 schema，不要手搓命令。**
+
+### 1) 为什么禁用「覆盖式同步」
+
+旧做法是 `git archive <ref> backend | tar -x --strip-components=1`。tar 是**覆盖式、不删除**
+语义，于是 main 上被**重命名**的迁移文件会在服务器留下旧副本：
+
+```
+migrations/versions/c3d4e5f6a7b8_add_song_extend_type.py     ← main 已改名为 c3d4e5f7a8b9
+migrations/versions/c3d4e5f6a7b8_fix_index_unique_drift.py   ← main 已改名为 c3d4e5f6a7b9
+```
+
+后果不是「旧文件没用到无所谓」，而是容器内 `alembic heads` 直接报
+`Revision ... is present more than once` —— **迁移链整体不可用**。当时是靠人工比
+`git ls-tree -r --name-only` 与服务器 `find`（147 vs 149）才定位。
+
+所以同步必须是**镜像语义**。`sync-code.sh`：
+
+- 有 `rsync` → `rsync -a --delete`（最快）。
+- 无 `rsync`（Ubuntu 最小化安装常见）→ 退化路径：**先按 `git ls-tree` 清单删掉目标端多余文件，
+  再 tar 解包覆盖**。选它而不是「先清目录再解包」，是因为清目录会连带删掉 `data/`、`.env`
+  等**不在 git 里**的资产 —— 那等于删数据。
+- 忽略白名单：`__pycache__/`、`data/`、`.cache/`、`.env*`、`*.log`、`*.pyc`、`.pytest_cache/`。
+  这些既不计入「多余」判定，也不会被清理。
+- **同步后自检**：重新比对 `git ls-tree` 与实际文件，**多了或少了都非零退出并打印差异**，
+  把当时那次人工比对变成自动化。
+- `--dry-run`：只打印将删除/写入的文件，不落盘。
+
+```bash
+./deploy/hk/sync-code.sh origin/main --dry-run   # 先看计划
+./deploy/hk/sync-code.sh origin/main             # 真同步
+```
+
+### 2) 为什么 cutover 必须先停应用
+
+想「让迁移重新管辖 schema」的正确顺序是
+**stop 应用 → 备份 → `DROP SCHEMA` → `alembic upgrade head` → start 应用 → 校验**。
+
+反例是应用还在跑时就重建 schema：应用的 lifespan 会走
+`Base.metadata.create_all`（`SCHEMA_CREATE_ALL=1`）**抢建** 13 张表，随后 alembic 撞上
+「表已存在」而失败。**PG 的 DDL 是事务性的** → 整个 upgrade 回滚，
+`alembic_version` 根本没建起来，而日志里**没有任何显式报错**。
+
+`schema-cutover.sh` 据此编排，并在第 5 步用**一次性容器**跑迁移，同时显式传
+`SCHEMA_CREATE_ALL=0`，让建表权**唯一归 alembic**：
+
+```
+1 数据保护闸门  users / songs 行数 > 0 且无 --force → 拒绝执行（防误删生产）
+2 pg_dump 备份  带时间戳 → deploy/hk/backups/
+3 stop 应用     必须早于 DROP SCHEMA
+4 DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+5 alembic upgrade head   （--rm --no-deps，SCHEMA_CREATE_ALL=0）
+6 start 应用
+7 校验
+8 结果 / 失败恢复指引
+```
+
+校验项（任一项不过即非零退出，并打印回滚指引）：
+
+- `alembic_version` 存在且 **== `alembic heads`**
+- `alembic current` 输出
+- public 基础表数量 > 1（只有 `alembic_version` 说明迁移整体回滚了）
+- 种子行数：`engine_configs` / `pricing_tiers` / `routing_rules` 均 > 0
+- 公网 `/health` 返回 `{"status":"ok"}`（可用 `PUBLIC_PROBE=0` 跳过）
+
+```bash
+./deploy/hk/schema-cutover.sh --dry-run    # 只打印将执行的命令（不连服务器）
+./deploy/hk/schema-cutover.sh              # 空库场景直接跑
+./deploy/hk/schema-cutover.sh --force      # users/songs 有真实数据时，显式确认后重跑
+```
+
+可用环境变量：`APP_DIR`、`COMPOSE_FILE`、`COMPOSE_FILE_OVERRIDES`、`SERVICE`、
+`PG_SERVICE`、`DB_NAME`、`PG_USER`、`PUBLIC_HEALTH_URL`、`PUBLIC_PROBE`、`BACKUP_DIR`。
+
+### 3) 回滚方式
+
+| 场景 | 回滚动作 |
+|---|---|
+| 迁移后校验不过 | 用第 2 步的备份恢复：`stop music` → `psql -d flow_music < deploy/hk/backups/flow_music-schema-cutover-<TS>.sql` → `up -d music` |
+| PG 整体不可用（临时保命） | 改 `.env` 的 `DATABASE_URL` 回 `sqlite:////app/data/app.db`，置 `SCHEMA_CREATE_ALL=1`，`docker compose up -d --force-recreate music` |
+| 代码同步后要回退版本 | 重跑 `./deploy/hk/sync-code.sh <旧 ref>` —— 镜像语义会把新版本多出的文件删掉，不留幽灵 |
+
+`--dry-run` 输出的示例（假路径演示，见 ISSUE #107 回帖）已验证不落盘。
 
 ---
 
