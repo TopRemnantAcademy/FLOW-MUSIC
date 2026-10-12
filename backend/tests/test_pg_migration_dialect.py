@@ -65,8 +65,8 @@ def pg_sql() -> str:
 
 
 def test_pg_offline_render_reaches_head(pg_sql):
-    """① 渲染必须覆盖到链尾（单 head a9b0c1d2e3f4），而不是中途抛异常。"""
-    assert "a9b0c1d2e3f4" in pg_sql, "离线 SQL 未渲染到 head revision"
+    """① 渲染必须覆盖到链尾（当前单 head h1a2b3c4d5e6），而不是中途抛异常。"""
+    assert "h1a2b3c4d5e6" in pg_sql, "离线 SQL 未渲染到 head revision"
     # 至少要真的产出 DDL，而不是只写了版本表。
     assert "CREATE TABLE" in pg_sql and "ALTER TABLE" in pg_sql
 

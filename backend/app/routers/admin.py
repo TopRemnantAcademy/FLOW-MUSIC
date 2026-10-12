@@ -1,12 +1,21 @@
 """管理后台：歌曲审核 + 引擎/路由/计费后台控制（多引擎路由后台控制核心）。"""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.config import settings
-from app.models import Song, User, EngineConfig, RoutingRule, PricingTier, AuditLog, UserLink
+from app.models import (
+    Song,
+    User,
+    EngineConfig,
+    RoutingRule,
+    PricingTier,
+    AuditLog,
+    UserLink,
+    ContentReport,
+)
 from app.billing.models import Subscription
 from app.mureka_health import format_report, probe_egress
 from app.orchestrator.mureka import MurekaProvider
@@ -19,7 +28,8 @@ from app.orchestrator.selection import (
     get_engine,
     get_tier,
 )
-from app.routers.auth import require_admin
+from app.audit import log_moderation_action
+from app.routers.auth import require_admin, _resolve_admin_role
 from app.schemas import (
     AdminSongOut,
     AdminStatsOut,
@@ -35,6 +45,12 @@ from app.schemas import (
     PricingTierUpdate,
     ConfigDashboardOut,
     AuditLogOut,
+    ModerationQueueItem,
+    BatchModerationReq,
+    BatchModerationOut,
+    ModerationStatsOut,
+    ReportOut,
+    ReportResolveReq,
 )
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -53,6 +69,54 @@ def _engine_out(e: EngineConfig) -> EngineConfigOut:
         priority=int(e.priority or 0),
         notes=e.notes or None,
     )
+
+
+# ---------- GAP-016：审核动作审计 + 风险分级 ----------
+def _actor(request) -> tuple[str, str]:
+    """取当前 admin 的 (role, token_prefix)，用于审计。"""
+    token = request.headers.get("X-Admin-Token") or request.cookies.get(settings.admin_cookie_name)
+    role = _resolve_admin_role(token) or "none"
+    return role, (token or "")[:6]
+
+
+def _risk_level(song: Song) -> tuple[str, list[str]]:
+    """审核队列**风险分级**：由列值推导的可解释等级，不引入玄学打分。
+
+    规则（命中越高风险）：
+      · high   音频机审未通过（moderation_note 含音频判定）/ 举报中的曲目
+               —— 类为高危，人审须先看；
+      · medium 文本机审曾命中（moderation_note 非空）或未走自动通过（pending 且无 note）；
+      · low    其余（多为等待常规确认）。
+    ⚠ 这里刻意不读 ContentReport 表（列表接口不该为每行再查一次举报），
+      举报叠加的风险在 `moderation_stats` 里以 reports_open 单独呈现。
+    """
+    note = (song.moderation_note or "").strip()
+    factors: list[str] = []
+    level = "low"
+    if note and ("音频" in note or "ASR" in note.upper()):
+        level = "high"
+        factors.append("音频机审未通过")
+    if song.status == "failed":
+        level = "high" if level == "high" else "medium"
+        factors.append("生成失败")
+    if note:
+        if level == "low":
+            level = "medium"
+        factors.append("存在审核备注")
+    if song.moderation_status == "pending" and not note:
+        factors.append("等待人工确认")
+    if not factors:
+        factors.append("常规")
+    return level, factors
+
+
+def _to_queue_item(song: Song, email: str | None) -> ModerationQueueItem:
+    level, factors = _risk_level(song)
+    base = _to_admin_out(song, email)
+    return ModerationQueueItem(**base.model_dump(), risk_level=level, risk_factors=factors)
+
+
+_RISK_RANK = {"high": 0, "medium": 1, "low": 2}
 
 
 # ---------- 歌曲审核（既有） ----------
@@ -83,6 +147,7 @@ def _to_admin_out(song: Song, email: str | None) -> AdminSongOut:
         price_cny=float(song.price_cny) if song.price_cny is not None else None,
         margin_cny=float(song.margin_cny) if song.margin_cny is not None else None,
         tier_key=song.tier_key or None,
+        license=song.license or "non_commercial",
         created_at=song.created_at.isoformat() if song.created_at else "",
         user_email=email,
     )
@@ -117,6 +182,7 @@ def list_songs(
 @router.post("/songs/{song_id}/approve", response_model=AdminSongOut)
 def approve_song(
     song_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     _: None = Depends(require_admin),
 ):
@@ -127,6 +193,15 @@ def approve_song(
     song.moderation_note = ""
     db.commit()
     db.refresh(song)
+    role, prefix = _actor(request)
+    log_moderation_action(
+        action="approve",
+        target_type="song",
+        target_id=song.id,
+        actor_role=role,
+        actor_token_prefix=prefix,
+        path=f"/api/admin/songs/{song_id}/approve",
+    )
     user = db.get(User, song.user_id) if song.user_id else None
     return _to_admin_out(song, user.email if user else None)
 
@@ -135,6 +210,7 @@ def approve_song(
 def reject_song(
     song_id: int,
     body: RejectReq,
+    request: Request,
     db: Session = Depends(get_db),
     _: None = Depends(require_admin),
 ):
@@ -150,8 +226,266 @@ def reject_song(
     song.is_public = False
     db.commit()
     db.refresh(song)
+    role, prefix = _actor(request)
+    log_moderation_action(
+        action="reject",
+        target_type="song",
+        target_id=song.id,
+        actor_role=role,
+        actor_token_prefix=prefix,
+        detail=(body.note or "").strip(),
+        path=f"/api/admin/songs/{song_id}/reject",
+    )
     user = db.get(User, song.user_id) if song.user_id else None
     return _to_admin_out(song, user.email if user else None)
+
+
+# ---------- GAP-016：审核队列增强（风险分级 / 批量 / 统计） ----------
+_MAX_BATCH = 200  # 单次批量上限：防一次点掉全库（也是 UI 一次选择的上限）
+
+
+@router.get("/moderation/queue", response_model=list[ModerationQueueItem])
+def moderation_queue(
+    risk_level: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """人审队列：默认只看 `pending`，按**风险分级**排序（high → medium → low）。
+
+    `risk_level` 可筛选（high/medium/low）。分级依据见 `_risk_level` 的可解释规则。
+    排序在 Python 侧做（队列本来只取 pending，规模可控；把打分塞进 SQL 反而难读）。
+    """
+    q = (
+        db.query(Song, User.email)
+        .join(User, User.id == Song.user_id, isouter=True)
+        .filter(Song.moderation_status == "pending", Song.deleted_at.is_(None))
+    )
+    rows = q.order_by(Song.id.desc()).all()
+    items = [_to_queue_item(song, email) for song, email in rows]
+    if risk_level:
+        items = [i for i in items if i.risk_level == risk_level]
+    items.sort(key=lambda i: (_RISK_RANK.get(i.risk_level, 9), -i.id))
+    start = max(0, offset)
+    return items[start : start + max(1, min(int(limit), 200))]
+
+
+@router.post("/moderation/batch", response_model=BatchModerationOut)
+def batch_moderate(
+    body: BatchModerationReq,
+    action: str = "approve",
+    request: Request = None,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """批量批准/驳回（`?action=approve|reject`）。
+
+    · 每个变更曲目落一条 AuditLog（审核动作可审计，Req: #84）。
+    · 已终态（approved/rejected）的曲目**跳过**而非静默覆盖：批量操作不该
+      悄悄推翻别人已经做出的判定。
+    · 驳回同样撤销公开（与单条 reject 一致，见上）。
+    """
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="action 仅支持 approve|reject")
+    if not body.ids:
+        raise HTTPException(status_code=400, detail="ids 不能为空")
+    if len(body.ids) > _MAX_BATCH:
+        raise HTTPException(status_code=400, detail=f"单次批量上限 {_MAX_BATCH} 条")
+    if action == "reject" and not (body.note or "").strip():
+        # 驳回必须给理由：无理由驳回让作者/运营无从申诉与追溯。
+        raise HTTPException(status_code=400, detail="批量驳回必须提供 note 原因")
+
+    role, prefix = _actor(request) if request is not None else ("none", "")
+    approved = rejected = skipped = 0
+    changed: list[int] = []
+    for sid in dict.fromkeys(body.ids):  # 去重且保持顺序
+        song = db.get(Song, sid)
+        if not song or song.deleted_at is not None:
+            skipped += 1
+            continue
+        if song.moderation_status != "pending":
+            skipped += 1
+            continue
+        if action == "approve":
+            song.moderation_status = "approved"
+            song.moderation_note = ""
+            approved += 1
+            changed.append(song.id)
+            log_moderation_action(
+                action="approve",
+                target_type="song",
+                target_id=song.id,
+                actor_role=role,
+                actor_token_prefix=prefix,
+                detail="批量批准",
+                path="/api/admin/moderation/batch",
+            )
+        else:
+            song.moderation_status = "rejected"
+            song.moderation_note = (body.note or "").strip()
+            song.is_public = False
+            rejected += 1
+            changed.append(song.id)
+            log_moderation_action(
+                action="reject",
+                target_type="song",
+                target_id=song.id,
+                actor_role=role,
+                actor_token_prefix=prefix,
+                detail=(body.note or "").strip(),
+                path="/api/admin/moderation/batch",
+            )
+    db.commit()
+    return BatchModerationOut(approved=approved, rejected=rejected, skipped=skipped, ids=changed)
+
+
+@router.get("/moderation/stats", response_model=ModerationStatsOut)
+def moderation_stats(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    """审核效率统计：队列积压 + 风险分布 + 举报计数。"""
+    pending_rows = (
+        db.query(Song)
+        .filter(Song.moderation_status == "pending", Song.deleted_at.is_(None))
+        .all()
+    )
+    by_risk = {"high": 0, "medium": 0, "low": 0}
+    for s in pending_rows:
+        level, _ = _risk_level(s)
+        by_risk[level] = by_risk.get(level, 0) + 1
+    by_mod = {
+        k: v
+        for k, v in db.query(Song.moderation_status, func.count(Song.id))
+        .filter(Song.deleted_at.is_(None))
+        .group_by(Song.moderation_status)
+        .all()
+    }
+    reports_open = (
+        db.query(func.count(ContentReport.id)).filter(ContentReport.status == "open").scalar() or 0
+    )
+    reports_resolved = (
+        db.query(func.count(ContentReport.id))
+        .filter(ContentReport.status != "open")
+        .scalar()
+        or 0
+    )
+    return ModerationStatsOut(
+        pending=len(pending_rows),
+        approved=int(by_mod.get("approved", 0)),
+        rejected=int(by_mod.get("rejected", 0)),
+        by_risk=by_risk,
+        reports_open=int(reports_open),
+        reports_resolved=int(reports_resolved),
+    )
+
+
+# ---------- GAP-016：举报 / DMCA 处置（人工下架流程） ----------
+def _report_out(r: ContentReport, title: str | None = None) -> ReportOut:
+    return ReportOut(
+        id=r.id,
+        song_id=r.song_id,
+        reporter_user_id=r.reporter_user_id,
+        reporter_email=r.reporter_email or None,
+        reason=r.reason,
+        detail=r.detail or None,
+        status=r.status,
+        resolution=r.resolution or None,
+        resolved_by=r.resolved_by or None,
+        resolved_at=r.resolved_at.isoformat() if r.resolved_at else None,
+        created_at=r.created_at.isoformat() if r.created_at else None,
+        song_title=title,
+    )
+
+
+@router.get("/reports", response_model=list[ReportOut])
+def list_reports(
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """举报列表（可按 status=open|resolved|dismissed 过滤）。"""
+    q = db.query(ContentReport, Song.title).join(Song, Song.id == ContentReport.song_id, isouter=True)
+    if status:
+        q = q.filter(ContentReport.status == status)
+    rows = (
+        q.order_by(ContentReport.id.desc())
+        .limit(max(1, min(int(limit), 500)))
+        .offset(max(0, offset))
+        .all()
+    )
+    return [_report_out(r, title) for r, title in rows]
+
+
+@router.post("/reports/{report_id}/resolve", response_model=ReportOut)
+def resolve_report(
+    report_id: int,
+    body: ReportResolveReq,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """处置举报：`takedown`（下架曲目 + 撤销公开 + 标记驳回）或 `rejected`（举报不成立）。
+
+    人工下架流程的闭环：举报 → 管理员判定 → （若下架）曲目失去公开可见性
+    且被标记 rejected，避免「从广场消失但直连仍在」的老问题（同 reject_song 的 SEC 注释）。
+    """
+    if body.resolution not in ("takedown", "rejected"):
+        raise HTTPException(status_code=400, detail="resolution 仅支持 takedown|rejected")
+    rep = db.get(ContentReport, report_id)
+    if not rep:
+        raise HTTPException(status_code=404, detail="举报不存在")
+    role, prefix = _actor(request)
+
+    song = db.get(Song, rep.song_id)
+    if body.resolution == "takedown":
+        if song is not None:
+            song.is_public = False
+            song.moderation_status = "rejected"
+            song.moderation_note = (body.note or "").strip() or "举报成立，人工下架"
+        rep.status = "resolved"
+    else:
+        rep.status = "dismissed"
+    rep.resolution = body.resolution
+    rep.resolved_by = f"{role}:{prefix}"
+    rep.resolved_at = func.now()
+    db.commit()
+    db.refresh(rep)
+
+    log_moderation_action(
+        action="report_resolve",
+        target_type="report",
+        target_id=rep.id,
+        actor_role=role,
+        actor_token_prefix=prefix,
+        detail=f"{body.resolution}:{(body.note or '').strip()}",
+        path=f"/api/admin/reports/{report_id}/resolve",
+    )
+    if song is not None and body.resolution == "takedown":
+        log_moderation_action(
+            action="takedown",
+            target_type="song",
+            target_id=song.id,
+            actor_role=role,
+            actor_token_prefix=prefix,
+            detail=(body.note or "").strip(),
+            path=f"/api/admin/reports/{report_id}/resolve",
+        )
+    title = db.query(Song.title).filter(Song.id == rep.song_id).scalar()
+    return _report_out(rep, title)
+
+
+@router.get("/moderation/health")
+def moderation_health(_: None = Depends(require_admin)):
+    """审核链路就绪状态：文本词库 / 音频 ASR / 云审核配置（GAP-016）。
+
+    运维价值：`enable_audio_moderation=True` 但 ASR 未配置时，音频机审**fail-closed**
+    拦下所有音频（不是放行）。这个端点把该状态直接暴露出来，避免「开了开关却没接
+    ASR」在生产里被误读成「审核已生效」。
+    """
+    from app import moderation
+
+    return moderation.describe_state()
 
 
 @router.get("/stats", response_model=AdminStatsOut)

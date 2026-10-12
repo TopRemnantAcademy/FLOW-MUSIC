@@ -127,10 +127,22 @@
 - 누락: 공개 아티스트 프로필, 팔로우, 댓글, 타인 곡 좋아요, SNS 공유, 협업 플레이리스트, 커뮤니티 피드.
 - 권고: `Profile`, `Follow`, `Comment`, `Like` 모델 + explore 통합.
 
-**GAP-016 콘텐츠 권리 / 심의 강화**
-- 현황: `moderate_audio` 자리표시자(`moderation.py:99-115`), `check_lyric` 블록리스트(플레이스홀더 위험 `:21,42-60`).
-- 누락: ASR 전사+텍스트심의, 저작권/라이선스 모델, DMCA/신고, 워터마킹, 사람复核 큐 UI(`moderation_status` 컬럼은 있음 `models.py:42`).
-- 권고: ASR 연동, `ModerationQueue` admin UI, 라이선스 선택(상업/비상업).
+**GAP-016 콘텐츠 권리 / 심의 강화**  ✅ 后端已落地（#84 / 迁移 `h1a2b3c4d5e6`）
+- 현황(旧): `moderate_audio` 자리표시자(항상 True), `check_lyric` 예시词库.
+- **已实现**:
+  - **真实 ASR 接入**：`app/asr.py`（`whisper` 自建 HTTP / `openai` 兼容端点）→ 转写 →
+    `check_lyric`；替换 `moderate_audio` 占位（恒 True）。**fail-closed**：未配 ASR/调用失败
+    一律**不放行**（音频走人工），绝不静默通过。
+  - **词库完善**：`blocklist.txt` 扩展为按类目组织的可用集合（60+ 词，非旧占位 2 词）；
+    可选专业审核 API（`moderation_api_base`，OpenAI 兼容 `/moderations`）。
+  - **内容权利**：`Song.license`（commercial / non_commercial，默认保守取非商用）+
+    生成时选择 + owner 可调（`PATCH /api/songs/{id}/license`）+ 举报/DMCA
+    （`POST /api/songs/{id}/report` → admin `resolve`：takedown / dismissed）+ 人工下架闭环。
+  - **审核队列增强**：风险分级（`/api/admin/moderation/queue`，high/medium/low 由列值推导）、
+    批量批准/驳回（`/api/admin/moderation/batch`，驳回必填原因）、动作入 `AuditLog`
+    （`app/audit.py:log_moderation_action`）、统计（`/api/admin/moderation/stats`）。
+  - 前端：`admin/moderation` 页加批量选择 + 风险徽章 + 举报视图 + 授权显示。
+- 缺(后续): 音频水印（`watermark` 未实现，不臆称已有）。
 
 ### Tier 3 — 플랫폼 / 스케일
 

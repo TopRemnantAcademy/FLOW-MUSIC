@@ -43,6 +43,8 @@ export type SongView = {
   // GAP-010 音频格式（**下载侧**可选；Mureka 生成入参无格式控制，见后端 mureka.py 头部）。
   audio_format?: string;            // 下载格式偏好 mp3|wav|flac
   available_formats?: string[];     // 本曲实际可下载的格式（无损链接缺失时不列出）
+  // GAP-016 内容权利：授权类型（随分享/下载联动展示）commercial | non_commercial
+  license?: string;
   // ── 广场互动（2026-09-10）：无文本互动，不做留言/评论 ──
   like_count?: number;
   favorite_count?: number;
@@ -136,6 +138,39 @@ export type AdminSongView = SongView & {
   price_cny?: number | null;
   margin_cny?: number | null;
   tier_key?: string | null;
+  // GAP-016 内容权利：授权类型（后台可见，便于判定可否被下游商用）
+  license?: string | null;
+};
+
+// GAP-016 审核队列：风险分级（由后端列值推导，前端只展示，不自行重算）
+export type ModerationQueueItem = AdminSongView & {
+  risk_level: "high" | "medium" | "low";
+  risk_factors: string[];
+};
+
+export type ModerationStats = {
+  pending: number;
+  approved: number;
+  rejected: number;
+  by_risk: Record<string, number>;
+  reports_open: number;
+  reports_resolved: number;
+};
+
+// GAP-016 举报 / DMCA（admin 侧）
+export type ReportRow = {
+  id: number;
+  song_id: number;
+  reporter_user_id?: number | null;
+  reporter_email?: string | null;
+  reason: string;
+  detail?: string | null;
+  status: string;
+  resolution?: string | null;
+  resolved_by?: string | null;
+  resolved_at?: string | null;
+  created_at?: string | null;
+  song_title?: string | null;
 };
 
 export type AdminStats = {
@@ -721,6 +756,33 @@ export const api = {
     requestAdmin(`/api/admin/songs/${id}/reject`, {
       method: "POST",
       body: JSON.stringify({ note: note || "" }),
+    }),
+  // —— GAP-016 审核队列增强 / 内容权利 ——
+  // 队列按风险分级排序（high → medium → low），risk_level 由后端推导，前端只展示。
+  adminModerationQueue: (riskLevel?: string, limit = 50, offset = 0) => {
+    const params: Record<string, string> = {
+      limit: String(limit),
+      offset: String(offset),
+    };
+    if (riskLevel) params.risk_level = riskLevel;
+    return requestAdmin<ModerationQueueItem[]>(
+      `/api/admin/moderation/queue?${new URLSearchParams(params).toString()}`,
+    );
+  },
+  adminBatchModerate: (ids: number[], action: "approve" | "reject", note?: string) =>
+    requestAdmin<{ approved: number; rejected: number; skipped: number; ids: number[] }>(
+      `/api/admin/moderation/batch?action=${action}`,
+      { method: "POST", body: JSON.stringify({ ids, note: note || "" }) },
+    ),
+  adminModerationStats: () => requestAdmin<ModerationStats>("/api/admin/moderation/stats"),
+  adminReports: (status?: string) =>
+    requestAdmin<ReportRow[]>(
+      `/api/admin/reports${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+    ),
+  adminResolveReport: (id: number, resolution: "takedown" | "rejected", note?: string) =>
+    requestAdmin<ReportRow>(`/api/admin/reports/${id}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ resolution, note: note || "" }),
     }),
   // —— 后台控制：引擎 / 路由 / 计费（X-Admin-Token 鉴权）——
   // ⚠ adminEngines / adminGetEngine / adminRoutingRules / adminPricingTiers 已移除：

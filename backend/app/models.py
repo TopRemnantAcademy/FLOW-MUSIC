@@ -95,6 +95,13 @@ class Song(Base):
     audio_format = Column(
         String(8), default="mp3", server_default="mp3", nullable=False
     )  # 下载格式 mp3|wav|flac（默认 mp3）
+    # ---- GAP-016 内容权利：授权类型 ----
+    # commercial / non_commercial。生成时选择；默认 non_commercial（保守）：
+    # 未显式声明商用的产物不得被下游当作可商用素材（比"默认商用"误用风险低一个量级）。
+    # 该字段随分享/下载联动展示（SongOut.license），便于用户与运营判定使用边界。
+    license = Column(
+        String(16), default="non_commercial", server_default="non_commercial", nullable=False
+    )
     audio_wav_url = Column(Text, default="")  # 上游无损 WAV 链接（choices[].wav_url）
     audio_flac_url = Column(Text, default="")  # 上游无损 FLAC 链接（choices[].flac_url）
     preview_audio_url = Column(Text, default="")  # 试听片段（前 N 秒）；未订阅者只能拿到这个链接
@@ -323,7 +330,14 @@ class PricingTier(Base):
 
 
 class AuditLog(Base):
-    """管理后台审计日志：记录所有 /api/admin 访问（含变更与失败尝试）。"""
+    """管理后台审计日志：记录所有 /api/admin 访问（含变更与失败尝试）。
+
+    GAP-016 起同时承载**审核动作审计**：admin 的批准/驳回（单条与批量）在
+    middleware 的访问日志之外，再写一条结构化记录（action/target_*），
+    使「谁在何时对哪首歌做了什么判定」可独立查询与追责。
+    `method/path/status_code` 对审核动作行填等价信息（POST + 端点路径 + 200），
+    保持与访问日志同表可查（不另立一张 audit 表使查询分叉）。
+    """
 
     __tablename__ = "audit_logs"
 
@@ -334,6 +348,39 @@ class AuditLog(Base):
     actor_token_prefix = Column(String(16), default="")  # 令牌前 6 字符，便于追溯但不泄露全令牌
     actor_role = Column(String(16), default="none")  # super / viewer / none(无效令牌)
     client_ip = Column(String(64), default="")
+    # ---- GAP-016 审核动作结构化字段（访问日志行为 NULL/空）----
+    action = Column(String(32), nullable=True, index=True)  # approve|reject|takedown|report_resolve
+    target_type = Column(String(16), nullable=True)  # song|report
+    target_id = Column(Integer, nullable=True, index=True)
+    detail = Column(Text, nullable=True)  # 备注/原因（驳回理由、下架原因等）
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ContentReport(Base):
+    """内容举报 / DMCA 侵权通知（GAP-016）。
+
+    与「审核队列」分开建表的原因：审核队列是对**自有生成物**的事前/事后把关，
+    举报是**外部权利人或用户**发起的投诉，两件事的触发方、时效、法务含义都不同。
+    举报可指向任何歌曲（含已公开曲），未处理前进入人工下架流程。
+
+    `status`：open（待处理）| resolved（已处理，含下架/驳回举报）| dismissed（举报不成立）。
+    `resolution`：处理结论（takedown / rejected / duplicate ...），供审计与申诉回溯。
+    """
+
+    __tablename__ = "content_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    song_id = Column(Integer, ForeignKey("songs.id"), index=True, nullable=False)
+    reporter_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    # 举报人联系邮箱：DMCA 场景举报人可能非注册用户（外部权利人），故单列且可为空。
+    reporter_email = Column(String(255), default="")
+    # copyright | hate | violence | sexual | spam | other —— 前端枚举，服务端校验。
+    reason = Column(String(32), nullable=False, default="other")
+    detail = Column(Text, default="")
+    status = Column(String(16), nullable=False, default="open", server_default="open", index=True)
+    resolution = Column(String(32), default="")  # takedown | rejected | duplicate | ...
+    resolved_by = Column(String(64), default="")  # admin actor 标识（role:prefix）
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

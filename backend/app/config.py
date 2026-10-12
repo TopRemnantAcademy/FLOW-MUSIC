@@ -156,6 +156,29 @@ class Settings(BaseSettings):
     # 默认关闭：MVP 不阻塞生成、不依赖外部；启用后未通过标记 rejected。
     enable_audio_moderation: bool = False
 
+    # ── GAP-016 音频机审真实化：ASR 供应商 + 可选专业审核 API ──
+    # 供应商选择（实证口径见 app/asr.py 头部；未配置即视为「不可用」→ fail-closed）：
+    #   ""         未接 ASR —— enable_audio_moderation=True 时**不放行**（转 pending 走人工），
+    #              这是替换旧占位「恒 True」的核心：开了开关但没有 ASR 必须拦下而不是放行。
+    #   "whisper"  自建/faster-whisper 兼容 HTTP 服务（POST /transcribe，见 asr.WhisperASR）
+    #   "openai"   OpenAI 兼容 /audio/transcriptions（whisper-1）；换任意网关只改 api_base
+    asr_provider: str = ""
+    asr_api_base: str = ""  # whisper 自建：服务根地址；openai：默认 https://api.openai.com/v1
+    asr_api_key: str = ""  # openai 兼容端点必填；自建可留空
+    asr_model: str = "whisper-1"
+    asr_language: str = "zh"  # 转写语言提示（zh 提升中文歌词识别率，非强制）
+    asr_timeout_seconds: float = 60.0  # 单次转写整体上限（1 分钟音频实测约 3~8s，见 asr.py）
+    asr_max_bytes: int = 25 * 1024 * 1024  # 转写单文件上限（OpenAI 官方 25MB 限制）
+    # 专业内容审核 API（可选）。配置后 check_lyric/音频审核在**词库命中之外**再调一次
+    # 云审核；未配置则仅词库。base 留空 = 关闭。
+    moderation_api_base: str = ""  # OpenAI 兼容 /moderations；腾讯/阿里雲需各自适配器
+    moderation_api_key: str = ""
+    moderation_api_model: str = "omni-moderation-latest"
+    moderation_api_timeout_seconds: float = 15.0
+    # 审核失败（ASR 报错/超时/云审核 5xx）时的策略。fail-closed=不放行（默认，安全优先）：
+    # 任何异常都不得让音频「静默通过」，这是本模块唯一的安全底线。
+    moderation_fail_closed: bool = True
+
     # 音频后处理（F1 响度 / F2 母带 / F3 降噪 / F4 分离；默认关闭，需 storage 下载/重托管）
     enable_audio_postprocess: bool = False
     audio_postprocess_steps: str = "loudness,mastering,denoise"  # 可选追加 separation（需 GPU）

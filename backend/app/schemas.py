@@ -109,6 +109,10 @@ class GenerateReq(BaseModel):
     # 上游响应同时回传三种链接，本字段只是「下载时默认取哪种」的偏好。
     # 非白名单值由路由层 400 fail-closed（见 songs.py::_normalize_audio_format）。
     audio_format: Optional[str] = None
+    # GAP-016 内容权利：生成时选择授权类型 commercial | non_commercial。
+    # 默认 None → 落库取保守值 non_commercial（见 routers/songs.py:_normalize_license）；
+    # 非白名单值 400 fail-closed，避免把任意字符串写进权利字段。
+    license: Optional[str] = None
     # P1 显式扣费同意：超额时是否用 FLOW credit 按次支付。
     # ⚠️ 必须用户主动勾选才为 True —— 未经同意自动扣款属业务逻辑缺陷 + 合规风险
     # （消费者知情同意 / CWE-840 Business Logic Errors）。默认 False = 超额一律 402。
@@ -278,6 +282,8 @@ class SongOut(BaseModel):
     can_download: bool = False  # 是否可下载完整音频（= 已订阅）
     # ---- GAP-010 音频格式（下载侧可选；仅订阅者可见无损链接）----
     audio_format: str = "mp3"  # 下载格式 mp3|wav|flac
+    # ---- GAP-016 内容权利：授权类型（随分享/下载联动展示）----
+    license: str = "non_commercial"  # commercial | non_commercial
     # 该曲**实际可用**的下载格式列表（上游返了 flac_url/wav_url 才有 wav/flac）。
     # 前端据此禁用「无损」选项，避免点了才发现 402/缺失（不撒谎的能力声明）。
     available_formats: list[str] = []
@@ -307,6 +313,83 @@ class AdminStatsOut(BaseModel):
 
 class RejectReq(BaseModel):
     note: Optional[str] = None
+
+
+# ---------- GAP-016 审核队列增强 / 内容权利 ----------
+class ModerationQueueItem(AdminSongOut):
+    """审核队列单条：在 AdminSongOut 之上补**风险分级**所需的可解释依据。
+
+    风险不是拍脑袋的分数字段，而是可由列值推导的等级（见 routers/admin.py:_risk_level），
+    故这里只暴露等级与触发它的因素，避免前端自行重算出现两套口径。
+    """
+
+    risk_level: str = "low"  # high | medium | low
+    risk_factors: list[str] = []  # 触发该等级的因素（"音频机审未通过" 等），供人审快速定位
+
+
+class BatchModerationReq(BaseModel):
+    """批量批准/驳回。
+
+    `ids` 上限由路由层校验（防一次点掉全库）；`note` 仅驳回时使用。
+    """
+
+    ids: list[int]
+    note: Optional[str] = None
+
+
+class BatchModerationOut(BaseModel):
+    approved: int = 0
+    rejected: int = 0
+    skipped: int = 0  # 不存在/已删除/已终态被跳过的数量
+    ids: list[int] = []  # 实际变更的 song id
+
+
+class ModerationStatsOut(BaseModel):
+    """审核效率统计（GAP-016）：队列积压 + 处置计数。"""
+
+    pending: int = 0
+    approved: int = 0
+    rejected: int = 0
+    by_risk: dict = {}  # high/medium/low → pending 数量
+    reports_open: int = 0
+    reports_resolved: int = 0
+
+
+class ReportCreate(BaseModel):
+    """举报 / DMCA 提交流程。reason 为闭词表，服务端校验。"""
+
+    song_id: int
+    reason: str = "other"  # copyright|hate|violence|sexual|spam|other
+    detail: Optional[str] = None
+    reporter_email: Optional[str] = None  # 外部权利人（未注册）可填
+
+
+class ReportOut(BaseModel):
+    id: int
+    song_id: int
+    reporter_user_id: Optional[int] = None
+    reporter_email: Optional[str] = None
+    reason: str
+    detail: Optional[str] = None
+    status: str
+    resolution: Optional[str] = None
+    resolved_by: Optional[str] = None
+    resolved_at: Optional[str] = None
+    created_at: Optional[str] = None
+    song_title: Optional[str] = None
+
+
+class ReportResolveReq(BaseModel):
+    """举报处置：takedown（下架）/ rejected（举报不成立）。"""
+
+    resolution: str  # takedown | rejected
+    note: Optional[str] = None
+
+
+class LicenseUpdateReq(BaseModel):
+    """生成后调整授权类型（owner 或 admin）。"""
+
+    license: str  # commercial | non_commercial
 
 
 # ---------- 管理后台（引擎/路由/计费：后台控制） ----------

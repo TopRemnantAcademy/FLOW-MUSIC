@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, AdminSongView, AdminStats } from "@/lib/api";
+import { api, AdminSongView, AdminStats, ModerationQueueItem, ReportRow } from "@/lib/api";
 import { clearAdminKey, getAdminKey } from "@/lib/adminAuth";
 import AdminGuard from "@/components/AdminGuard";
 
@@ -30,6 +30,29 @@ const GEN_STATUS_CN: Record<string, string> = {
 };
 const genStatusCn = (s?: string | null) => (s ? GEN_STATUS_CN[s] ?? s : "");
 
+// GAP-016 风险分级展示（等级由后端推导，前端只做映射 —— 避免两套口径）。
+const RISK_LABEL: Record<string, string> = { high: "高风险", medium: "中风险", low: "低风险" };
+function riskColor(level?: string) {
+  if (level === "high") return "bg-red-900 text-red-300";
+  if (level === "medium") return "bg-amber-900 text-amber-300";
+  return "bg-emerald-900 text-emerald-300";
+}
+
+const REPORT_REASON_CN: Record<string, string> = {
+  copyright: "版权 / DMCA",
+  hate: "仇恨歧视",
+  violence: "暴力",
+  sexual: "色情低俗",
+  spam: "垃圾信息",
+  other: "其他",
+};
+const reportReasonCn = (r: string) => REPORT_REASON_CN[r] || r;
+
+// 授权类型中文（GAP-016 内容权利）：随详情展示，便于判定可否被下游商用。
+function licenseCn(l?: string | null) {
+  return l === "commercial" ? "可商用" : "非商用";
+}
+
 function isAbsUrl(u?: string | null) {
   return typeof u === "string" && /^https?:\/\//i.test(u);
 }
@@ -45,6 +68,14 @@ export default function AdminPage() {
   const [busy, setBusy] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<number | null>(null);
   const [rejectNote, setRejectNote] = useState("");
+  // GAP-016：视图切换（审核队列 / 举报）、批量选择、风险过滤
+  const [view, setView] = useState<"queue" | "reports">("queue");
+  const [riskFilter, setRiskFilter] = useState<string>("");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [riskBySong, setRiskBySong] = useState<Record<number, string>>({});
+  const [reports, setReports] = useState<ReportRow[]>([]);
+  const [batchNote, setBatchNote] = useState("");
+  const [batchRejectOpen, setBatchRejectOpen] = useState(false);
   const PAGE_SIZE = 50;
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -52,6 +83,22 @@ export default function AdminPage() {
   useEffect(() => {
     setToken(getAdminKey() || null);
   }, []);
+
+  async function loadReports() {
+    setError("");
+    setLoading(true);
+    try {
+      setReports(await api.adminReports("open"));
+    } catch (e: any) {
+      setError(e?.message || "加载失败");
+      if (e?.status === 401 || e?.status === 403 || e?.status === 503) {
+        clearAdminKey();
+        setToken(null);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function load(reset = true) {
     setError("");
@@ -65,6 +112,18 @@ export default function AdminPage() {
       setSongs(reset ? s : [...songs, ...s]);
       setStats(st);
       setHasMore(s.length >= PAGE_SIZE);
+      // 风险分级只对「待审核」有意义：拉一次队列建立 id → risk_level 映射，
+      // 用于列表里展示风险徽章（等级由后端推导，前端不重算）。
+      api
+        .adminModerationQueue(undefined, 200, 0)
+        .then((q: ModerationQueueItem[]) => {
+          const m: Record<number, string> = {};
+          q.forEach((it) => (m[it.id] = it.risk_level));
+          setRiskBySong(m);
+        })
+        .catch(() => {
+          /* 风险映射是增强项，失败不影响主列表 */
+        });
     } catch (e: any) {
       setError(e?.message || "加载失败");
       // 密钥无效/过期 → 退回门禁，不停留在"能点但全报错"的状态
@@ -102,9 +161,14 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    if (token) load(true);
+    if (!token) return;
+    if (view === "reports") {
+      loadReports();
+    } else {
+      load(true);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, filter, statusFilter]);
+  }, [token, filter, statusFilter, view]);
 
   async function approve(id: number) {
     setBusy(true);
@@ -131,6 +195,68 @@ export default function AdminPage() {
       refreshStats();
     } catch (e: any) {
       setError(e?.message || "操作失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // —— GAP-016 批量处置 ——
+  function toggleSelect(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function batchApprove() {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    setBusy(true);
+    try {
+      await api.adminBatchModerate(ids, "approve");
+      ids.forEach((id) => patchModeration(id, "approved", ""));
+      setSelected(new Set());
+      refreshStats();
+    } catch (e: any) {
+      setError(e?.message || "批量操作失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function batchReject() {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    const note = batchNote.trim();
+    if (!note) {
+      setError("批量驳回必须填写原因");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.adminBatchModerate(ids, "reject", note);
+      ids.forEach((id) => patchModeration(id, "rejected", note));
+      setSelected(new Set());
+      setBatchNote("");
+      setBatchRejectOpen(false);
+      refreshStats();
+    } catch (e: any) {
+      setError(e?.message || "批量操作失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resolveReport(id: number, resolution: "takedown" | "rejected") {
+    setBusy(true);
+    try {
+      await api.adminResolveReport(id, resolution);
+      setReports((prev) => prev.filter((r) => r.id !== id));
+      refreshStats();
+    } catch (e: any) {
+      setError(e?.message || "举报处置失败");
     } finally {
       setBusy(false);
     }
@@ -192,6 +318,81 @@ export default function AdminPage() {
         <BigCard emoji="✅" title="已处理" value={String(handled)} sub="通过 + 驳回" />
       </div>
 
+      {/* 视图切换：审核队列 / 举报（GAP-016） */}
+      <div className="mb-5 flex flex-wrap gap-2 text-base">
+        <button
+          onClick={() => setView("queue")}
+          className="chip rounded-full px-4 py-2"
+          data-on={view === "queue"}
+        >
+          审核队列
+        </button>
+        <button
+          onClick={() => setView("reports")}
+          className="chip rounded-full px-4 py-2"
+          data-on={view === "reports"}
+        >
+          举报{stats && (stats as any).reports_open ? `(${(stats as any).reports_open})` : ""}
+        </button>
+      </div>
+
+      {view === "reports" ? (
+        <div className="space-y-3">
+          {reports.map((r) => (
+            <div key={r.id} className="rounded-2xl card p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold">{r.song_title || `曲目 #${r.song_id}`}</div>
+                  <div className="mt-1 text-sm text-[var(--muted)]">
+                    {reportReasonCn(r.reason)}
+                    {r.reporter_email ? ` · ${r.reporter_email}` : ""}
+                  </div>
+                  {r.detail ? (
+                    <p className="mt-2 whitespace-pre-wrap text-sm text-[var(--ink-soft)]">{r.detail}</p>
+                  ) : null}
+                </div>
+                <span className="shrink-0 rounded-full bg-amber-900 px-3 py-1 text-sm text-amber-300">
+                  待处理
+                </span>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={() => resolveReport(r.id, "takedown")}
+                  disabled={busy}
+                  className="btn btn-danger"
+                >
+                  下架
+                </button>
+                <button
+                  onClick={() => resolveReport(r.id, "rejected")}
+                  disabled={busy}
+                  className="btn btn-secondary"
+                >
+                  举报不成立
+                </button>
+              </div>
+            </div>
+          ))}
+          {reports.length === 0 && (
+            <p className="rounded-2xl card p-6 text-center text-[var(--muted)]">暂无待处理举报</p>
+          )}
+        </div>
+      ) : (
+      <>
+      {/* 风险筛选（GAP-016） */}
+      <div className="mb-5 flex flex-wrap gap-2 text-base">
+        {[{ key: "", label: "全部风险" }, { key: "high", label: "高风险" }, { key: "medium", label: "中风险" }, { key: "low", label: "低风险" }].map((f) => (
+          <button
+            key={f.key || "all-risk"}
+            onClick={() => setRiskFilter(f.key)}
+            className="chip rounded-full px-4 py-2"
+            data-on={riskFilter === f.key}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
       <div className="mb-5 flex flex-wrap gap-2 text-base">
         {FILTERS.map((f) => (
           <button
@@ -219,13 +420,33 @@ export default function AdminPage() {
       </div>
 
       <div className="space-y-3">
-        {songs.map((s) => {
+        {songs
+          .filter((s) => !riskFilter || riskBySong[s.id] === riskFilter)
+          .map((s) => {
           const ms = s.moderation_status || "pending";
+          const risk = riskBySong[s.id];
           return (
             <div key={s.id} className="rounded-2xl card p-4">
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-lg font-semibold">{s.title}</div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    {/* 批量选择：仅待审核项可勾选（已终态不会被批量覆盖） */}
+                    {ms === "pending" && (
+                      <input
+                        type="checkbox"
+                        checked={selected.has(s.id)}
+                        onChange={() => toggleSelect(s.id)}
+                        className="h-4 w-4 shrink-0"
+                        aria-label="选择本曲"
+                      />
+                    )}
+                    <div className="text-lg font-semibold">{s.title}</div>
+                    {risk ? (
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${riskColor(risk)}`}>
+                        {RISK_LABEL[risk] || risk}
+                      </span>
+                    ) : null}
+                  </div>
                   <div className="mt-1 text-sm text-[var(--muted)]">
                     {s.user_email || "未知用户"}
                     {s.duration ? ` · ${Math.floor(s.duration / 60)}分${s.duration % 60}秒` : ""}
@@ -233,6 +454,7 @@ export default function AdminPage() {
                   </div>
                   <div className="mt-1 flex flex-wrap gap-2 text-xs text-[var(--muted)]">
                     {s.content_category ? <span>分类：{s.content_category}</span> : null}
+                    <span>授权：{licenseCn(s.license)}</span>
                     {s.engine_name ? <span>引擎：{s.engine_name}</span> : null}
                     {s.tier_key ? <span>套餐：{s.tier_key}</span> : null}
                     {s.cost_cny != null ? <span>成本：¥{s.cost_cny.toFixed(2)}</span> : null}
@@ -306,6 +528,32 @@ export default function AdminPage() {
         )}
       </div>
 
+      {/* GAP-016 批量操作条：选中 ≥1 项时出现 */}
+      {selected.size > 0 && (
+        <div className="sticky bottom-4 mt-4 flex items-center justify-between gap-3 rounded-2xl card p-3">
+          <span className="text-sm text-[var(--muted)]">已选 {selected.size} 首</span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setSelected(new Set())}
+              className="btn btn-ghost"
+              disabled={busy}
+            >
+              清除
+            </button>
+            <button onClick={batchApprove} disabled={busy} className="btn btn-primary">
+              批量通过
+            </button>
+            <button
+              onClick={() => setBatchRejectOpen(true)}
+              disabled={busy}
+              className="btn btn-danger"
+            >
+              批量驳回
+            </button>
+          </div>
+        </div>
+      )}
+
       {hasMore && (
         <button
           onClick={loadMore}
@@ -314,6 +562,38 @@ export default function AdminPage() {
         >
           {loading ? "加载中…" : "加载更多"}
         </button>
+      )}
+      </>
+      )}
+
+      {/* 批量驳回：必须填原因（与后端契约一致：无理由 400） */}
+      {batchRejectOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-2xl card p-5">
+            <h3 className="mb-3 text-lg font-semibold">批量驳回（{selected.size} 首）</h3>
+            <textarea
+              value={batchNote}
+              onChange={(e) => setBatchNote(e.target.value)}
+              rows={4}
+              placeholder="请填写驳回原因（必填，供作者申诉与追溯）"
+              className="mb-4 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-base text-[var(--ink)] outline-none transition focus:border-[var(--ink-soft)]"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setBatchRejectOpen(false);
+                  setBatchNote("");
+                }}
+                className="btn btn-ghost"
+              >
+                取消
+              </button>
+              <button onClick={batchReject} disabled={busy} className="btn btn-danger">
+                确认驳回
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {rejectTarget != null && (
