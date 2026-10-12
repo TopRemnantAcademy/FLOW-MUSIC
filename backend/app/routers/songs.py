@@ -28,6 +28,7 @@ from app.models import (
     SongRating,
     SyncRecord,
     User,
+    ContentReport,
 )
 import app.moderation as moderation
 from app.orchestrator.base import GenerateRequest, SongResult
@@ -84,6 +85,9 @@ from app.schemas import (
     VocalCloneResp,
     EasyGenerateReq,
     InstrumentalReq,
+    LicenseUpdateReq,
+    ReportCreate,
+    ReportOut,
 )
 
 router = APIRouter(prefix="/api/songs", tags=["songs"])
@@ -278,6 +282,8 @@ def _to_out(
         can_download=can_download(user),
         audio_format=song.audio_format or "mp3",
         available_formats=_available_formats(song),
+        # GAP-016 内容权利：随分享/下载联动展示（分享链接/下载响应里都带得上）
+        license=song.license or "non_commercial",
         created_at=song.created_at.isoformat() if song.created_at else "",
     )
 
@@ -402,6 +408,8 @@ def _create_song(req: GenerateReq, user: User, db: Session) -> Song:
         price_cny=price,
         margin_cny=margin,
         tier_key=tier_key,
+        # GAP-016 内容权利：生成时选择授权类型（默认 non_commercial）
+        license=_normalize_license(getattr(req, "license", None)),
     )
     db.add(song)
     db.commit()
@@ -413,6 +421,27 @@ def _create_song(req: GenerateReq, user: User, db: Session) -> Song:
         db.commit()
         raise
     return song
+
+
+# GAP-016 内容权利：授权类型闭词表。非白名单一律 400（不静默改写）。
+LICENSES = ("commercial", "non_commercial")
+
+
+def _normalize_license(raw: str | None) -> str:
+    """校验并归一化授权类型；None/空 → non_commercial（保守默认）。
+
+    非法值 → 400 fail-closed：权利字段被任意字符串污染，等于下游无法据此做
+    任何合规判断（"可商用吗"没有可信答案）。
+    """
+    value = (raw or "").strip().lower()
+    if not value:
+        return "non_commercial"
+    if value not in LICENSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的授权类型：{raw}（仅支持 commercial / non_commercial）",
+        )
+    return value
 
 
 def _apply_postprocess(remote_url: str) -> str:
@@ -2130,3 +2159,104 @@ def assist_format_lyrics(
     rate_limit_generate(str(user.id))
     optimized, notes = optimize_lyrics(body.text or "")
     return AssistTextResp(optimized=optimized, notes=notes)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GAP-016 内容权利：授权类型调整 + 举报 / DMCA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# 举报理由闭词表（服务端校验，与前端枚举一致）。
+_REPORT_REASONS = ("copyright", "hate", "violence", "sexual", "spam", "other")
+
+
+@router.patch("/{song_id}/license", response_model=SongOut)
+def update_song_license(
+    song_id: int,
+    body: LicenseUpdateReq,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """调整曲目授权类型（owner 本人）。
+
+    ⚠ 只有 owner 可改：授权类型是权利声明，别人替你决定「这首可商用」是错的。
+    被驳回（rejected）的曲目不允许改授权（撤回内容不因改字段而复活）。
+    """
+    song = db.get(Song, song_id)
+    if not song or song.deleted_at is not None or song.user_id != user.id:
+        raise HTTPException(status_code=404, detail="歌曲不存在")
+    if song.moderation_status == "rejected":
+        raise HTTPException(status_code=409, detail="已驳回的曲目不可调整授权类型")
+    song.license = _normalize_license(body.license)
+    db.commit()
+    db.refresh(song)
+    return _to_out(song, user)
+
+
+@router.post("/{song_id}/report", response_model=ReportOut)
+def report_song(
+    song_id: int,
+    body: ReportCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """举报 / DMCA 侵权通知（登录用户）。
+
+    与 admin 处置端点（/api/admin/reports/{id}/resolve）构成闭环：
+    举报 → 人工判定 → takedown（下架）/ dismissed（举报不成立）。
+    ⚠ 同一用户对同一首歌**未处理**的重复举报视为幂等（返回既有记录），
+    避免「反复提交」把队列灌满。
+    """
+    if body.song_id != song_id:
+        raise HTTPException(status_code=400, detail="song_id 不一致")
+    if body.reason not in _REPORT_REASONS:
+        raise HTTPException(
+            status_code=400, detail=f"不支持的举报理由：{body.reason}（{', '.join(_REPORT_REASONS)}）"
+        )
+    song = db.get(Song, song_id)
+    if not song or song.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="歌曲不存在")
+
+    dup = (
+        db.query(ContentReport)
+        .filter(
+            ContentReport.song_id == song_id,
+            ContentReport.reporter_user_id == user.id,
+            ContentReport.status == "open",
+        )
+        .first()
+    )
+    if dup:
+        return ReportOut(
+            id=dup.id,
+            song_id=dup.song_id,
+            reporter_user_id=dup.reporter_user_id,
+            reporter_email=dup.reporter_email or None,
+            reason=dup.reason,
+            detail=dup.detail or None,
+            status=dup.status,
+            created_at=dup.created_at.isoformat() if dup.created_at else None,
+            song_title=song.title,
+        )
+
+    rep = ContentReport(
+        song_id=song_id,
+        reporter_user_id=user.id,
+        reporter_email=(body.reporter_email or "").strip() or (user.email or ""),
+        reason=body.reason,
+        detail=(body.detail or "").strip(),
+        status="open",
+    )
+    db.add(rep)
+    db.commit()
+    db.refresh(rep)
+    return ReportOut(
+        id=rep.id,
+        song_id=rep.song_id,
+        reporter_user_id=rep.reporter_user_id,
+        reporter_email=rep.reporter_email or None,
+        reason=rep.reason,
+        detail=rep.detail or None,
+        status=rep.status,
+        created_at=rep.created_at.isoformat() if rep.created_at else None,
+        song_title=song.title,
+    )
