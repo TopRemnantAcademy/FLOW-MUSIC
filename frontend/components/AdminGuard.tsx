@@ -57,8 +57,13 @@ export default function AdminGuard({
         aria-label="管理密钥"
         className="input mb-4"
       />
-      {error && <p className="mb-3 text-sm text-[var(--danger)]">{error}</p>}
+      {error && (
+        <p className="mb-3 text-sm text-[var(--danger)]" role="alert">
+          {error}
+        </p>
+      )}
       <button
+        type="button"
         onClick={submit}
         className="btn btn-primary w-full"
       >

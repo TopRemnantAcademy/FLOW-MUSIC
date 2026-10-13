@@ -511,6 +511,7 @@ function RoutingTab({
                 disabled={busy}
                 onChange={(e) => changeEngine(r, e.target.value)}
                 className="input"
+                aria-label={`${catLabel(r.category)}：用哪种方式生成`}
               >
                 {engines.map((e) => (
                   <option key={e.provider} value={e.provider}>
@@ -721,6 +722,7 @@ function EditModal({
                   value={form.provider ?? ""}
                   onChange={(e) => set("provider", e.target.value)}
                   className="input"
+                  aria-label="用哪种方式生成"
                 >
                   <option value="">— 请选择 —</option>
                   {engines.map((e) => (

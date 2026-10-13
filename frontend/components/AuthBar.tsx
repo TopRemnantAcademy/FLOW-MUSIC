@@ -98,6 +98,7 @@ export default function AuthBar() {
           {name}
         </span>
         <button
+          type="button"
           onClick={logout}
           className="btn btn-ghost btn-sm"
         >
@@ -110,14 +111,19 @@ export default function AuthBar() {
   return (
     <div ref={wrapRef} className="relative">
       <button
+        type="button"
         onClick={() => setOpen((o) => !o)}
         className="btn btn-primary btn-sm"
+        aria-expanded={open}
+        aria-haspopup="dialog"
       >
         {open ? "关闭" : mode === "login" ? "登录" : "注册"}
       </button>
       {open && (
         <form
           onSubmit={submit}
+          role="dialog"
+          aria-label={mode === "login" ? "登录" : "注册"}
           className="card absolute right-0 z-10 mt-2 w-64 space-y-2 p-3 shadow-lg"
         >
           <input
@@ -161,7 +167,11 @@ export default function AuthBar() {
           >
             {mode === "login" ? "去注册" : "去登录"}
           </button>
-          {msg && <p className="text-xs text-[var(--danger)]">{msg}</p>}
+          {msg && (
+            <p className="text-xs text-[var(--danger)]" role="alert">
+              {msg}
+            </p>
+          )}
         </form>
       )}
     </div>

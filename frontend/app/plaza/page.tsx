@@ -70,15 +70,22 @@ function StarRating({
   value,
   onRate,
   disabled,
+  songTitle,
 }: {
   value: number | null | undefined;
   onRate: (n: number) => void;
   disabled?: boolean;
+  songTitle?: string | null;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const shown = hover ?? value ?? 0;
+  const who = songTitle ? `《${songTitle}》` : "本曲";
   return (
-    <span className="inline-flex items-center gap-0.5">
+    <span
+      className="inline-flex items-center gap-0.5"
+      role="group"
+      aria-label={`${who}评分（当前 ${value ?? 0} 星）`}
+    >
       {[1, 2, 3, 4, 5].map((n) => (
         <button
           key={n}
@@ -90,7 +97,8 @@ function StarRating({
           className={`text-base leading-none transition disabled:opacity-50 ${
             n <= shown ? "text-[var(--ink)]" : "text-[var(--muted)]"
           } ${!disabled && "hover:scale-110"}`}
-          aria-label={`${n} 星`}
+          aria-label={`给${who}打 ${n} 星`}
+          aria-pressed={value === n}
         >
           ★
         </button>
@@ -128,6 +136,8 @@ function InteractRow({
             : "text-[var(--muted)] hover:text-[var(--ink-soft)]"
         }`}
         title="点赞（可取消）"
+        aria-label={`${song.liked_by_me ? "取消点赞" : "点赞"}（当前 ${song.like_count || 0} 赞）`}
+        aria-pressed={!!song.liked_by_me}
       >
         {song.liked_by_me ? "♥" : "♡"} {song.like_count || 0}
       </button>
@@ -141,12 +151,19 @@ function InteractRow({
             : "text-[var(--muted)] hover:text-[var(--ink-soft)]"
         }`}
         title="收藏（可取消）"
+        aria-label={`${song.favorited_by_me ? "取消收藏" : "收藏"}（当前 ${song.favorite_count || 0} 次收藏）`}
+        aria-pressed={!!song.favorited_by_me}
       >
         {song.favorited_by_me ? "★已藏" : "☆收藏"} {song.favorite_count || 0}
       </button>
 
       <span className="flex items-center gap-1.5">
-        <StarRating value={song.my_rating} disabled={busy} onRate={onRate} />
+        <StarRating
+          value={song.my_rating}
+          disabled={busy}
+          onRate={onRate}
+          songTitle={song.title}
+        />
         <span className="text-xs text-[var(--muted)]">
           {song.rating_count
             ? `${song.rating_avg?.toFixed(1)} (${song.rating_count})`
@@ -350,7 +367,11 @@ export default function PlazaPage() {
       </div>
       )}
 
-      {error && <p className="mb-4 text-sm text-[var(--danger)]">{error}</p>}
+      {error && (
+        <p className="mb-4 text-sm text-[var(--danger)]" role="alert">
+          {error}
+        </p>
+      )}
 
       {/* ── 骨架屏（首屏加载） ── */}
       {loading && songs.length === 0 && (
@@ -396,6 +417,7 @@ export default function PlazaPage() {
               <article
                 key={s.id}
                 className="card lift enter p-4"
+                aria-label={`社区作品《${s.title || "未命名"}》`}
                 style={{ animationDelay: `${Math.min(i, 6) * 50}ms` }}
               >
                 {rank >= 0 && rank < 3 && (
@@ -447,6 +469,7 @@ export default function PlazaPage() {
           onClick={() => load(false)}
           disabled={loadingMore}
           className="btn btn-secondary mt-6 w-full"
+          aria-busy={loadingMore}
         >
           {loadingMore ? "加载中…" : "加载更多"}
         </button>

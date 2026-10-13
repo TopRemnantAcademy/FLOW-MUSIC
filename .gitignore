@@ -70,3 +70,6 @@ vendor/self-music/src.tar.gz
 .DS_Store
 Thumbs.db
 .pytest_tmp/
+
+# local agent scratch (dispatch briefs, memory)
+.workbuddy/

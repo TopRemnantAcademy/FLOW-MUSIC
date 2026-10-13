@@ -94,19 +94,37 @@ export default function SyncedLyrics({ audioRef, raw, plainLyric }: Props) {
     ) : null;
   }
 
+  // 当前行文本：供下方 aria-live 播报（读屏用户无法从视觉高亮得知"唱到哪了"）
+  const activeLineText = view.line >= 0 ? data.lines[view.line]?.text ?? "" : "";
+
   return (
-    <div className="sl-lyrics" role="list" aria-label="逐字同步歌词">
+    <>
+      {/* 歌词区状态播报：行变化时才更新（view.line 去重见上方 rAF 时钟） */}
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {activeLineText ? `当前歌词：${activeLineText}` : ""}
+      </p>
+    <div className="sl-lyrics" role="group" aria-label="逐字同步歌词（可按行/按词跳转）">
       {data.lines.map((ln, li) => {
         const lineWords = wordsByLine.get(li) ?? [];
         const isActiveLine = li === view.line;
         return (
-          <p
+          <div
             key={li}
+            role="button"
             ref={(el) => {
               lineRefs.current[li] = el;
             }}
             className={`sl-line${isActiveLine ? " is-active" : ""}`}
             onClick={() => seekTo(ln.start)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                seekTo(ln.start);
+              }
+            }}
+            tabIndex={0}
+            aria-current={isActiveLine ? "true" : undefined}
+            title="回车跳转到本行"
           >
             {lineWords.length === 0 ? (
               <span className="sl-word sl-word--done">{ln.text}</span>
@@ -126,12 +144,22 @@ export default function SyncedLyrics({ audioRef, raw, plainLyric }: Props) {
                 return (
                   <span
                     key={w.wi}
+                    role="button"
+                    tabIndex={0}
                     className={cls}
                     onClick={(e) => {
                       e.stopPropagation();
                       seekTo(w.start);
                     }}
-                    title={state === "cur" ? "正在播放" : "点击跳转"}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        seekTo(w.start);
+                      }
+                    }}
+                    aria-current={state === "cur" ? "true" : undefined}
+                    title={state === "cur" ? "正在播放，回车重播本词" : "回车跳转到本词"}
                   >
                     {w.text}
                     {" "}
@@ -139,9 +167,10 @@ export default function SyncedLyrics({ audioRef, raw, plainLyric }: Props) {
                 );
               })
             )}
-          </p>
+          </div>
         );
       })}
     </div>
+    </>
   );
 }

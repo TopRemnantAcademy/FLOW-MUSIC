@@ -98,13 +98,21 @@ export default function HomeFeed() {
         </Link>
       </div>
 
+      {loading && (
+        <p className="sr-only" role="status" aria-live="polite">
+          正在加载广场作品…
+        </p>
+      )}
+
       <div className="mb-5 flex flex-wrap gap-2">
         {SORTS.map((s) => (
           <button
             key={s.key}
+            type="button"
             onClick={() => setSort(s.key)}
             className="chip rounded-full px-3 py-1.5 text-sm"
             data-on={sort === s.key}
+            aria-pressed={sort === s.key}
           >
             {s.label}
           </button>
@@ -121,8 +129,10 @@ export default function HomeFeed() {
 
       {!loading && error && (
         <div className="card p-6 text-center">
-          <p className="mb-3 text-sm text-[var(--danger)]">{error}</p>
-          <button onClick={() => setTick((t) => t + 1)} className="btn btn-secondary">
+          <p className="mb-3 text-sm text-[var(--danger)]" role="alert">
+            {error}
+          </p>
+          <button type="button" onClick={() => setTick((t) => t + 1)} className="btn btn-secondary">
             重试
           </button>
         </div>

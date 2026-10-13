@@ -24,7 +24,10 @@ export default function NavBar() {
 
   return (
     <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg)]/90 backdrop-blur">
-      <nav className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3">
+      <nav
+        aria-label="主导航"
+        className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3"
+      >
         <Link
           href="/"
           className="text-lg font-bold text-[var(--ink)] transition hover:text-[var(--ink-soft)]"
@@ -40,6 +43,7 @@ export default function NavBar() {
                 href={l.href}
                 className="chip rounded-full px-3 py-1.5"
                 data-on={active}
+                aria-current={active ? "page" : undefined}
               >
                 {l.label}
               </Link>
@@ -54,6 +58,7 @@ export default function NavBar() {
               href="/admin"
               className="chip rounded-full px-3 py-1.5"
               data-on={pathname.startsWith("/admin")}
+              aria-current={pathname.startsWith("/admin") ? "page" : undefined}
               title="仅管理员可见"
             >
               管理

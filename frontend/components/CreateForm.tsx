@@ -1,7 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { api, SongView } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { trackGenerate } from "@/lib/eventReporter";
@@ -135,6 +144,12 @@ type AssistKind = "" | "lyrics-gen" | "lyrics-fmt" | "style" | "prompt" | "title
 
 export default function CreateForm() {
   const { isAuthed } = useAuth();
+  // Field 渲染出的 <label htmlFor> 指向的 id 通过 context 下发到各受控控件
+  const fieldCtx = useContext(FieldIdContext);
+  const fieldProps = {
+    id: fieldCtx.id,
+    "aria-describedby": fieldCtx.hintId,
+  } as const;
 
   const [style, setStyle] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -601,12 +616,13 @@ export default function CreateForm() {
         )}
 
         {/* ── 创作模式 ── */}
-        <div className="flex gap-1 rounded-lg bg-[var(--surface-2)] p-1">
+        <div className="flex gap-1 rounded-lg bg-[var(--surface-2)] p-1" role="group" aria-label="创作模式">
           {MODES.map((m) => (
             <button
               key={m.key}
               type="button"
               onClick={() => changeMode(m.key)}
+              aria-pressed={mode === m.key}
               className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
                 mode === m.key
                   ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm"
@@ -659,6 +675,7 @@ export default function CreateForm() {
                       onClick={() => toggleTag(it.cn)}
                       className="chip rounded-full px-2 py-0.5 text-xs"
                       data-on={on}
+                      aria-pressed={on}
                     >
                       {it.cn}
                     </button>
@@ -701,6 +718,7 @@ export default function CreateForm() {
           }
         >
           <input
+            {...fieldProps}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             className="input"
@@ -751,6 +769,8 @@ export default function CreateForm() {
           )}
           <textarea
             ref={lyricRef}
+            {...fieldProps}
+            id={undefined}
             value={lyric}
             onChange={(e) => setLyric(e.target.value)}
             disabled={instrumental}
@@ -806,6 +826,7 @@ export default function CreateForm() {
           }
         >
           <input
+            {...fieldProps}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             className="input"
@@ -825,6 +846,7 @@ export default function CreateForm() {
                     onClick={() => toggleEasyStyle(it.cn)}
                     className="chip rounded-full px-2 py-0.5 text-xs"
                     data-on={on}
+                    aria-pressed={on}
                   >
                     {it.cn}
                   </button>
@@ -862,7 +884,11 @@ export default function CreateForm() {
                 />
               </label>
             )}
-            {vocalCloneError && <p className="mt-1 text-xs text-[var(--danger)]">{vocalCloneError}</p>}
+            {vocalCloneError && (
+              <p className="mt-1 text-xs text-[var(--danger)]" role="alert">
+                {vocalCloneError}
+              </p>
+            )}
             <p className="mt-1 text-[11px] text-[var(--muted)]">
               仅支持 mp3 / m4a，单文件 &lt;10MB。克隆音色用于本次生成（mureka-o2 模型会自动忽略）。
             </p>
@@ -888,6 +914,7 @@ export default function CreateForm() {
                       value={vocal}
                       onChange={(e) => changeVocal(e.target.value)}
                       className="input max-w-[8rem]"
+                      aria-label="人声音色"
                     >
                       <option value="">不限</option>
                       <option value="male">男声</option>
@@ -908,7 +935,7 @@ export default function CreateForm() {
               <div>
                 <div className="mb-1 flex flex-wrap items-center gap-2">
                   <span className="text-[var(--muted)]">下载格式</span>
-                  <div className="flex gap-1">
+                  <div className="flex gap-1" role="group" aria-label="下载格式">
                     {AUDIO_FORMATS.map((f) => {
                       const locked = f.lossless && !canDownload;
                       const on = audioFormat === f.key;
@@ -918,6 +945,7 @@ export default function CreateForm() {
                           type="button"
                           disabled={locked}
                           onClick={() => setAudioFormat(f.key)}
+                          aria-pressed={on}
                           title={
                             locked
                               ? "无损格式（WAV / FLAC）需订阅后解锁"
@@ -973,8 +1001,16 @@ export default function CreateForm() {
             通常需要 1–3 分钟，请保持页面打开。完成后会自动载入播放器。
           </p>
         )}
-        {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
-        {assistNote && <p className="text-xs text-[var(--ink-soft)]">✓ {assistNote}</p>}
+        {error && (
+          <p className="text-sm text-[var(--danger)]" role="alert">
+            {error}
+          </p>
+        )}
+        {assistNote && (
+          <p className="text-xs text-[var(--ink-soft)]" role="status" aria-live="polite">
+            ✓ {assistNote}
+          </p>
+        )}
       </form>
 
       {/* ── 结果 + 衔接 ── */}
@@ -1054,6 +1090,7 @@ function AutoTextarea({
   disabled?: boolean;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const field = useContext(FieldIdContext);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -1063,6 +1100,8 @@ function AutoTextarea({
   return (
     <textarea
       ref={ref}
+      id={field.id}
+      aria-describedby={field.hintId}
       value={value}
       rows={rows}
       placeholder={placeholder}
@@ -1073,6 +1112,11 @@ function AutoTextarea({
   );
 }
 
+/** Field 自动生成的控件 id：避免每个调用点手写 id / aria-describedby 时漂移。 */
+const FieldIdContext = createContext<{ id?: string; hintId?: string }>({});
+
+/** 表单字段：label 用 id 与控件显式关联（a11y:label-has-associated-control），
+ *  因此每个受控控件必须带上 `id={fieldId}` 与 `aria-describedby`（有 hint 时）。 */
 function Field({
   label,
   hint,
@@ -1084,14 +1128,25 @@ function Field({
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const fieldId = useId();
+  const hintId = `${fieldId}-hint`;
+  // 通过 context 把 id 交给子控件，避免每处调用点手写 id 造成漂移
   return (
     <div>
       <div className="mb-1 flex items-center justify-between gap-2">
-        <label className="text-sm text-[var(--muted)]">{label}</label>
+        <label htmlFor={fieldId} className="text-sm text-[var(--muted)]">
+          {label}
+        </label>
         {action}
       </div>
-      {children}
-      {hint && <p className="mt-1 text-[11px] text-[var(--muted)]">{hint}</p>}
+      <FieldIdContext.Provider value={{ id: fieldId, hintId: hint ? hintId : undefined }}>
+        {children}
+      </FieldIdContext.Provider>
+      {hint && (
+        <p id={hintId} className="mt-1 text-[11px] text-[var(--muted)]">
+          {hint}
+        </p>
+      )}
     </div>
   );
 }

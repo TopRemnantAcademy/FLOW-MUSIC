@@ -385,7 +385,11 @@ export default function AccountPage() {
       </p>
 
       {loading && <p className="text-[var(--muted)]">加载中…</p>}
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && (
+        <p className="text-sm text-[var(--danger)]" role="alert">
+          {error}
+        </p>
+      )}
 
       {data && (
         <>
@@ -512,6 +516,7 @@ export default function AccountPage() {
                   value={tier}
                   onChange={(e) => setTier(e.target.value)}
                   className="input"
+                  aria-label="订阅档位"
                 >
                   <option value="free">免费档</option>
                   {/* 低档位：绑定 mureka-7.6，成本更低，故价格低于 standard */}
@@ -526,6 +531,7 @@ export default function AccountPage() {
                   disabled={!!allowedCurrency}
                   title={allowedCurrency ? `当前支付方式仅支持 ${CURRENCY_CN[allowedCurrency] ?? allowedCurrency}` : undefined}
                   className="input disabled:opacity-50"
+                  aria-label="支付币种"
                 >
                   <option value="CNY">人民币 ¥</option>
                   <option value="USD">美元 $</option>
@@ -606,7 +612,7 @@ export default function AccountPage() {
                   <div className="flex shrink-0 gap-3 text-right text-xs">
                     <span className="text-[var(--muted)]">成本 {fmt(s.cost_cny)}</span>
                     <span className="text-[var(--ink-soft)]">营收 {fmt(s.price_cny)}</span>
-                    <span className={s.margin_cny < 0 ? "text-red-400" : "text-emerald-400"}>
+                    <span className={s.margin_cny < 0 ? "text-[var(--danger)]" : "text-[var(--ink-soft)]"}>
                       毛利 {fmt(s.margin_cny)}
                     </span>
                   </div>
@@ -656,6 +662,8 @@ function ContactSection() {
           setState("idle");
           setErr("");
         }}
+        aria-expanded={open}
+        aria-controls="contact-form"
         className="flex w-full items-center justify-between text-sm text-[var(--ink-soft)] transition hover:text-[var(--ink)]"
       >
         <span>联系我们</span>
@@ -663,7 +671,12 @@ function ContactSection() {
       </button>
 
       {open && (
-        <div className="mt-3 flex flex-col gap-2">
+        <div
+          id="contact-form"
+          className="mt-3 flex flex-col gap-2"
+          role="group"
+          aria-label="联系我们表单"
+        >
           <p className="text-xs text-[var(--muted)]">
             无需登录即可留言。我们会阅读每一条消息。
           </p>
@@ -674,7 +687,7 @@ function ContactSection() {
             rows={5}
             placeholder="请输入内容…"
             aria-label="留言内容"
-            className="w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]"
+            className="w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--ink-soft)]"
           />
           <input
             value={reply}
@@ -682,7 +695,7 @@ function ContactSection() {
             maxLength={200}
             placeholder="联系方式（选填）：邮箱 / Telegram"
             aria-label="联系方式"
-            className="w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--accent)]"
+            className="w-full rounded-xl border border-[var(--border)] bg-transparent p-3 text-sm outline-none focus:border-[var(--ink-soft)]"
           />
           <button
             type="button"
@@ -707,13 +720,19 @@ function ContactSection() {
                 setErr(e instanceof Error ? e.message : "发送失败，请稍后重试。");
               }
             }}
-            className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+            className="rounded-xl bg-[var(--btn-solid-bg)] px-4 py-2 text-sm font-semibold text-[var(--btn-solid-fg)] disabled:opacity-60"
           >
             {state === "sending" ? "发送中…" : "发送"}
           </button>
-          {state === "ok" && <p className="text-xs text-[var(--accent)]">留言已送达，谢谢。</p>}
+          {state === "ok" && (
+            <p className="text-xs text-[var(--ink-soft)]" role="status" aria-live="polite">
+              留言已送达，谢谢。
+            </p>
+          )}
           {state === "err" && (
-            <p className="text-xs text-red-400">{err || "发送失败，请稍后重试。"}</p>
+            <p className="text-xs text-[var(--danger)]" role="alert">
+              {err || "发送失败，请稍后重试。"}
+            </p>
           )}
         </div>
       )}
@@ -733,7 +752,7 @@ function Card({
   return (
     <div className="rounded-xl card p-3">
       <p className="text-xs text-[var(--muted)]">{label}</p>
-      <p className={`mt-1 text-lg font-semibold ${danger ? "text-red-400" : "text-[var(--ink)]"}`}>
+      <p className={`mt-1 text-lg font-semibold ${danger ? "text-[var(--danger)]" : "text-[var(--ink)]"}`}>
         {value}
       </p>
     </div>

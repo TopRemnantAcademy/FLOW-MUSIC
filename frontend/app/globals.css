@@ -449,3 +449,77 @@ textarea.input { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; 
     animation: none;
   }
 }
+
+/* ============================================================
+   可访问性（GAP-024）
+   ⚠ 本节只做「焦点可见 / 跳转链接 / 读屏专用文本」，
+      不改动上方任何主题颜色令牌（由 #93 主题任务维护）。
+   ============================================================ */
+
+/* 键盘焦点必须可见：支持 :focus-visible 的浏览器只在键盘导航时画环，
+   避免鼠标点击也出现描边。自定义控件（歌词行/词、进度条、卡片）统一走这里。 */
+:where(
+  a,
+  button,
+  input,
+  select,
+  textarea,
+  summary,
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+/* .btn 自带 box-shadow 焦点环（见上方），避免双环叠加 */
+.btn:focus-visible {
+  outline: none;
+}
+/* 音频进度条是 role=slider 的 div，需要显式焦点样式 */
+[role="slider"]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* 跳转到主内容：默认移出视口，取得焦点后滑入（仅键盘用户可见） */
+.skip-link {
+  position: fixed;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  display: inline-block;
+  padding: 0.5rem 0.875rem;
+  border-radius: 9999px;
+  background: var(--btn-solid-bg);
+  color: var(--btn-solid-fg);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transform: translateY(-200%);
+  transition: transform 0.2s var(--ease);
+}
+.skip-link:focus-visible,
+.skip-link:focus {
+  transform: translateY(0);
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* 仅供读屏：视觉隐藏但保留在可访问性树中（对比度 / 状态播报） */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* 歌词行/词：键盘可达的跳转控件 —— 去掉默认下划线、焦点环贴合文字 */
+.sl-line:focus-visible,
+.sl-word:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}

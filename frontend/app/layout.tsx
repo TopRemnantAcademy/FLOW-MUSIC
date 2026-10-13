@@ -53,9 +53,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="theme-transition min-h-screen">
         <ThemeProvider>
           <AuthProvider>
+            {/* 跳转到主内容：键盘/读屏用户绕过导航栏（a11y，GAP-024） */}
+            <a href="#main-content" className="skip-link">
+              跳到主要内容
+            </a>
             <NavBar />
             <AnalyticsTracker />
-            {children}
+            <div id="main-content" tabIndex={-1} className="outline-none">
+              {children}
+            </div>
             <BottomPlayer />
           </AuthProvider>
           {/* [GAP-018] PWA 装配：SW 注册 / A2HS / 离线提示。

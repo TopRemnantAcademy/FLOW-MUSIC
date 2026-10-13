@@ -476,7 +476,9 @@ export default function AdminPage() {
               ) : null}
 
               {s.audio_url && isAbsUrl(s.audio_url) ? (
-                <audio controls src={s.audio_url} className="mt-3 w-full">
+                // 审核试听：歌曲音频无对白/字幕轨，track 只是一个空的占位（jsx-a11y/media-has-caption）
+                <audio controls src={s.audio_url} className="mt-3 w-full" aria-label="审核试听音频">
+                  <track kind="captions" srcLang="zh" label="无字幕（歌曲音频）" />
                   你的浏览器不支持音频播放
                 </audio>
               ) : null}
@@ -575,6 +577,7 @@ export default function AdminPage() {
               value={batchNote}
               onChange={(e) => setBatchNote(e.target.value)}
               rows={4}
+              aria-label="批量驳回原因（必填）"
               placeholder="请填写驳回原因（必填，供作者申诉与追溯）"
               className="mb-4 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-base text-[var(--ink)] outline-none transition focus:border-[var(--ink-soft)]"
             />
@@ -604,6 +607,7 @@ export default function AdminPage() {
               value={rejectNote}
               onChange={(e) => setRejectNote(e.target.value)}
               rows={4}
+              aria-label="驳回原因（可选）"
               placeholder="如不填将记录为「管理员驳回」"
               className="mb-4 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-base text-[var(--ink)] outline-none transition focus:border-[var(--ink-soft)]"
             />

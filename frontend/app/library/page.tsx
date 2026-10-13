@@ -375,9 +375,17 @@ export default function LibraryPage() {
       </div>
 
       {loading && <p className="text-[var(--muted)]">加载中…</p>}
-      {error && <p className="mb-3 text-sm text-[var(--danger)]">{error}</p>}
+      {error && (
+        <p className="mb-3 text-sm text-[var(--danger)]" role="alert">
+          {error}
+        </p>
+      )}
       {notice && (
-        <p className="mb-3 rounded-lg bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--ink)]">
+        <p
+          className="mb-3 rounded-lg bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--ink)]"
+          role="status"
+          aria-live="polite"
+        >
           {notice}
           <button onClick={() => setNotice("")} className="ml-2 text-xs text-[var(--muted)] underline">
             知道了
@@ -395,7 +403,11 @@ export default function LibraryPage() {
             <div className="card p-6 text-center text-[var(--muted)]">回收站是空的。</div>
           )}
           {trash.map((t) => (
-            <div key={t.id} className="card flex flex-wrap items-center justify-between gap-3 p-4">
+            <article
+              key={t.id}
+              className="card flex flex-wrap items-center justify-between gap-3 p-4"
+              aria-label={`回收站作品《${t.title || "未命名"}》`}
+            >
               <div>
                 <p className="font-semibold text-[var(--ink)]">{t.title || "未命名"}</p>
                 <p className="text-xs text-[var(--muted)]">
@@ -411,7 +423,7 @@ export default function LibraryPage() {
                   彻底删除
                 </button>
               </div>
-            </div>
+            </article>
           ))}
           {trash.length > 0 && (
             <button
@@ -462,9 +474,18 @@ export default function LibraryPage() {
           />
 
           {songs.length > 0 && (
-            <div className="card mb-4 flex flex-wrap items-center gap-2 p-3 text-sm">
+            <div
+              className="card mb-4 flex flex-wrap items-center gap-2 p-3 text-sm"
+              role="group"
+              aria-label="批量操作"
+            >
               <label className="flex items-center gap-1">
-                <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleSelectAll}
+                  aria-label={`全选本页作品（已选 ${selected.length}/${songs.length}）`}
+                />
                 全选（{selected.length}/{songs.length}）
               </label>
               <span className="flex-1" />
@@ -591,7 +612,7 @@ export default function LibraryPage() {
 
       <div className="space-y-4">
         {songs.map((s) => (
-          <div key={s.id} className="card p-4">
+          <article key={s.id} className="card p-4" aria-label={`作品《${s.title || "未命名"}》`}>
             <div className="mb-2 flex items-start justify-between gap-3">
               <div className="flex items-start gap-2">
                 <input
@@ -628,6 +649,7 @@ export default function LibraryPage() {
                   checked={!!s.is_public}
                   disabled={s.status !== "completed"}
                   onChange={() => onTogglePublic(s)}
+                  aria-label={`把《${s.title || "未命名"}》发布到广场`}
                 />
                 发布到广场
               </label>
@@ -677,6 +699,7 @@ export default function LibraryPage() {
                   onChange={(e) => setFolderName(e.target.value)}
                   className="input"
                   placeholder="分组名称（如：电子 / 客户 A）"
+                  aria-label="分组名称"
                 />
                 <button onClick={onPutInFolder} className="btn btn-primary btn-sm">
                   存入
@@ -727,6 +750,7 @@ export default function LibraryPage() {
                   className="input mb-2"
                   rows={3}
                   placeholder="改写后的歌词（≤3000 字）"
+                  aria-label="局部改写：改写后的歌词"
                 />
                 <div className="mb-2 flex gap-2">
                   <input
@@ -737,6 +761,7 @@ export default function LibraryPage() {
                     min={0}
                     step="0.1"
                     placeholder="开始秒"
+                    aria-label="局部改写：开始时间（秒）"
                   />
                   <input
                     value={regionEnd}
@@ -746,6 +771,7 @@ export default function LibraryPage() {
                     min={0}
                     step="0.1"
                     placeholder="结束秒"
+                    aria-label="局部改写：结束时间（秒）"
                   />
                 </div>
                 {regionError && <p className="mb-2 text-xs text-[var(--danger)]">{regionError}</p>}
@@ -766,7 +792,7 @@ export default function LibraryPage() {
                 </div>
               </div>
             )}
-          </div>
+          </article>
         ))}
       </div>
 
@@ -847,6 +873,7 @@ function PlaylistPanel({
           onChange={(e) => onNewPlaylistChange(e.target.value)}
           className="input flex-1"
           placeholder="新建播放列表名称"
+          aria-label="新建播放列表名称"
         />
         <button onClick={onCreatePlaylist} className="btn btn-primary btn-sm">
           新建

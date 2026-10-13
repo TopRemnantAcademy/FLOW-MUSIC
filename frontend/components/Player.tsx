@@ -364,19 +364,25 @@ export default function Player({
   return (
     <div className="card p-4">
       {local.status && local.status !== "completed" && (
-        <p className="mb-2 text-sm text-[var(--muted)]">状态：{statusCn(local.status)}</p>
+        <p className="mb-2 text-sm text-[var(--muted)]" role="status" aria-live="polite">
+          状态：{statusCn(local.status)}
+        </p>
       )}
 
       {generating ? (
-        <p className="text-sm text-[var(--muted)]">生成中…（状态：{statusCn(local.status || "pending")}）</p>
+        <p className="text-sm text-[var(--muted)]" role="status" aria-live="polite">
+          生成中…（状态：{statusCn(local.status || "pending")}）
+        </p>
       ) : audioMissing ? (
-        <p className="text-sm text-[var(--muted)]">⚠ 试听片段暂不可用，请稍后重试或订阅后收听完整版。</p>
+        <p className="text-sm text-[var(--muted)]" role="status">
+          ⚠ 试听片段暂不可用，请稍后重试或订阅后收听完整版。
+        </p>
       ) : (
         <>
           {local.cover_url && (
             <img
               src={local.cover_url}
-              alt={local.title || ""}
+              alt={local.title ? `《${local.title}》封面` : "歌曲封面"}
               loading="lazy"
               onError={(e) => {
                 (e.currentTarget as HTMLImageElement).style.display = "none";
@@ -393,7 +399,7 @@ export default function Player({
             )}
           </div>
           {isCurrent && (
-            <p className="mb-2 text-xs text-[var(--ink-soft)]">
+            <p className="mb-2 text-xs text-[var(--ink-soft)]" role="status">
               正在播放 · 队列 {queuePos}/{queueLen || 1}
             </p>
           )}
@@ -424,6 +430,7 @@ export default function Player({
                 }}
                 disabled={!canPrev}
                 className="btn btn-secondary btn-sm"
+                aria-label="播放上一首"
               >
                 上一首
               </button>
@@ -435,6 +442,7 @@ export default function Player({
                 }}
                 disabled={!canNext}
                 className="btn btn-secondary btn-sm"
+                aria-label="播放下一首"
               >
                 下一首
               </button>
@@ -451,6 +459,9 @@ export default function Player({
                 onClick={cycleRepeat}
                 className="btn btn-secondary btn-sm"
                 title="点击切换：关 → 列表循环 → 单曲循环"
+                aria-label={`循环模式：${
+                  prefs.repeat === "none" ? "关闭" : prefs.repeat === "all" ? "列表循环" : "单曲循环"
+                }`}
               >
                 {prefs.repeat === "none" ? "循环关" : prefs.repeat === "all" ? "列表循环" : "单曲循环"}
               </button>
@@ -569,6 +580,7 @@ export default function Player({
                     disabled={downloading}
                     className="input max-w-[6.5rem]"
                     title="选择下载格式（无损为订阅权益）"
+                    aria-label="下载格式"
                   >
                     {dlFormats.map((f) => (
                       <option key={f} value={f}>
@@ -591,7 +603,7 @@ export default function Player({
           </>
         )}
       </div>
-      {shareUrl && (
+{shareUrl && (
         <p className="mt-1 break-all text-xs text-[var(--ink-soft)]">
           分享链接：
           <a href={shareUrl} target="_blank" rel="noreferrer" className="underline">
@@ -599,7 +611,11 @@ export default function Player({
           </a>
         </p>
       )}
-      {msg && <p className="mt-1 text-xs text-[var(--ink-soft)]">{msg}</p>}
+      {msg && (
+        <p className="mt-1 text-xs text-[var(--ink-soft)]" role="status" aria-live="polite">
+          {msg}
+        </p>
+      )}
     </div>
   );
 }

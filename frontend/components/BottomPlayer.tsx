@@ -12,7 +12,7 @@
  * 上下首调 lib/playback 的 advance/back，队列一前移，对应卡片的 <Player> 会自己接手起播。
  */
 
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import type { SongView } from "@/lib/api";
 import {
   AB_MIN_SPAN,
@@ -39,6 +39,13 @@ import {
   useAudioTime,
 } from "@/lib/audioBus";
 import { useEffect, useState } from "react";
+
+// 循环模式中文名：状态要能被读屏单独读出来，而不只是一个可点按钮
+const REPEAT_CN: Record<string, string> = {
+  none: "关闭",
+  all: "列表循环",
+  one: "单曲循环",
+};
 
 export default function BottomPlayer() {
   const { playlist, prefs, ab } = usePlayback();
@@ -68,7 +75,7 @@ export default function BottomPlayer() {
     busSeek(ratio * duration);
   };
 
-  // ── GAP-013 AB 重复 ────────────────────────────────────────────────────
+// ── GAP-013 AB 重复 ────────────────────────────────────────────────────
   // 交互刻意做得「无聊」：A 就是打 A，B 就是打 B。不搞「第二次按同一键当 B」的
   // 状态复用 —— 那种设计在 AB 关掉后按 A 会莫名其妙造出区间。
   const onMarkA = () => {
@@ -91,8 +98,43 @@ export default function BottomPlayer() {
     setAbHint("");
   };
 
+  // a11y（GAP-024）：进度条是 div[role=slider]，必须能用键盘操作。
+  // ←/→ 5 秒；↑/↓ 10 秒；Home/End 到首尾；PageUp/PageDown 30 秒，
+  // 与原生 range 的键盘语义对齐（见 docs/A11Y_CHECKLIST.md）。
+  const seekBy = (delta: number) => {
+    if (duration <= 0) return;
+    busSeek(Math.min(duration, Math.max(0, t + delta)));
+  };
+  const seekFromKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const map: Record<string, number> = {
+      ArrowRight: 5,
+      ArrowLeft: -5,
+      ArrowUp: 10,
+      ArrowDown: -10,
+      PageUp: 30,
+      PageDown: -30,
+    };
+    if (e.key in map) {
+      e.preventDefault();
+      seekBy(map[e.key]);
+      return;
+    }
+    if (e.key === "Home") {
+      e.preventDefault();
+      busSeek(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      busSeek(duration);
+    }
+  };
+  };
+
   return (
     <>
+    {/* 播放状态改由下方 aria-live 播报，图标/文字本身对读屏隐藏以免重复朗读 */}
+    <span className="sr-only" role="status" aria-live="polite">
+      {playing ? "正在播放" : "已暂停"}：{song.title || "未命名"}（队列 {pos}/{playlist.songs.length}）
+    </span>
     <div className="fixed inset-x-0 bottom-0 z-30 border-t border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur">
       {/* 波形 seek（GAP-013）：可点击/拖动即跳转，复用同一个 audioBus 元素。
           ⚠️ 这里**没有传 peaksUrl** —— 底部条播的是任意曲目，而峰值端点目前只在
@@ -111,8 +153,10 @@ export default function BottomPlayer() {
         aria-valuemin={0}
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(t)}
+        // 5s 一格 = 进度条的可访问粒度（不是 1 秒，否则按一次跳 1 秒太慢）
         aria-valuetext={`${fmtClock(t)} / ${fmtClock(duration)}`}
         onClick={seekFromPointer}
+        onKeyDown={seekFromKey}
         className="h-1.5 w-full cursor-pointer bg-[var(--border)]"
       >
         <div
@@ -180,7 +224,7 @@ export default function BottomPlayer() {
             type="button"
             onClick={busToggleMute}
             className="btn btn-ghost btn-sm"
-            aria-label={muted ? "取消静音" : "静音"}
+            aria-label={muted ? "取消静音（当前已静音）" : "静音"}
             aria-pressed={muted}
           >
             {muted ? "已静音" : "音量"}
@@ -238,7 +282,7 @@ export default function BottomPlayer() {
             type="button"
             onClick={cycleRepeat}
             className="btn btn-ghost btn-sm"
-            aria-label="循环模式"
+            aria-label={`循环模式：${REPEAT_CN[prefs.repeat] ?? "关"}`}
             title="点击切换：关 → 列表循环 → 单曲循环"
           >
             {prefs.repeat === "none" ? "循环关" : prefs.repeat === "all" ? "列表循环" : "单曲循环"}
