@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.billing.service import enforce_subscription_validity
+from app.billing.service import enforce_ban, enforce_subscription_validity
 from app.db import get_db
 from app.models import User, UserLink
 from app.ratelimit import (
@@ -274,6 +274,9 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = db.get(User, uid)
     if not user:
         raise cred_exc
+    # [GAP-023] 封禁回收：**必须在订阅回收之前**——两者都改 tier_key，
+    # 反过来的话"已封禁 + 订阅未过期"的账号会被订阅回收逻辑判为"有效期内"而保留付费档。
+    enforce_ban(db, user)
     # [SEC] 2026-09-13: 만료/취소된 구독의 권한을 **접근 시점에** 회수(lazy revocation).
     # 스케줄러가 없으므로 여기서 회수하지 않으면 한 번 결제한 계정이 영구 유료로 남는다
     # (entitlements.is_subscribed 은 user.tier_key 만 본다).
@@ -388,6 +391,12 @@ def login(req: LoginReq, request: Request, response: Response, db: Session = Dep
     if user and _locked_now(user):
         db.commit()  # 만료 잠금 청소 결과 반영
         raise HTTPException(status_code=401, detail=_account_locked_detail())
+
+    # [GAP-023] 封禁账号：**密码校验之前**拒绝。
+    # 顺序与账户锁定同理——放到校验之后，攻击者在正确密码下仍能进，
+    # 「封禁」就退化成一句提示（详见 admin.ban_user 的边界说明）。
+    if user and bool(getattr(user, "is_banned", False)):
+        raise HTTPException(status_code=401, detail="账号已被封禁，请联系客服")
 
     if not user or not verify_password(req.password, user.hashed_password):
         if user:

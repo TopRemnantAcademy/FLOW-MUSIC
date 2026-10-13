@@ -5,10 +5,13 @@
  *
  * 2026-09-10 产品调整：内容审核与平台设置**只对管理员可见**，
  * 因此从公共导航栏移除，改为收进本控制台：
- *   /admin                 → 控制台首页（密钥门禁 + 五个入口）
+ *   /admin                 → 控制台首页（密钥门禁 + 全部入口）
+ *   /admin/users           → 用户管理（搜索/分页/封禁/改套餐，GAP-023）
+ *   /admin/finance         → 财务结算（收入侧 + 退款 + CSV 导出，GAP-023）
+ *   /admin/features        → 特性开关（灰度发布基础，GAP-023）
  *   /admin/moderation      → 内容审核
  *   /admin/music-config    → FLOW 设置
- *   /admin/billing         → 账单对账（Mureka 实时账单 vs 本站估算成本）
+ *   /admin/billing         → 成本对账（Mureka 实时账单 vs 本站估算成本）
  *   /admin/audit           → 审计日志（后台管理操作记录）
  *   /admin/user-links      → 跨域账号桥接（FLOW 订阅者 ↔ 音乐用户，零 PII）
  */
@@ -19,6 +22,24 @@ import { clearAdminKey, getAdminKey } from "@/lib/adminAuth";
 import AdminGuard from "@/components/AdminGuard";
 
 const ENTRIES = [
+  {
+    href: "/admin/users",
+    emoji: "👥",
+    title: "用户管理",
+    desc: "搜索用户，封禁/解封、调整套餐（动作全部入审计）",
+  },
+  {
+    href: "/admin/finance",
+    emoji: "💰",
+    title: "财务结算",
+    desc: "收入与退款事实、结算/发票 CSV 导出（与成本对账互补）",
+  },
+  {
+    href: "/admin/features",
+    emoji: "🚦",
+    title: "特性开关",
+    desc: "灰度发布：按比例/名单/套餐放量，带判定预览",
+  },
   {
     href: "/admin/moderation",
     emoji: "🛡️",
@@ -34,8 +55,8 @@ const ENTRIES = [
   {
     href: "/admin/billing",
     emoji: "💰",
-    title: "账单对账",
-    desc: "Mureka 实时账单 vs 本站估算成本",
+    title: "成本对账",
+    desc: "Mureka 实时账单 vs 本站估算成本（花钱侧）",
   },
   {
     href: "/admin/audit",

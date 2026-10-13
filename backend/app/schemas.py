@@ -570,3 +570,124 @@ class SimilarSongOut(SongOut):
 
     reasons: list[str] = []
     similarity: float = 0  # 排序分（标签加分 + 归一化 BM25），仅用于展示排序稳定，非概率
+
+
+# ---------- GAP-023 运营：用户管理 / 财务 / 特性开关 ----------
+class AdminUserOut(BaseModel):
+    """后台用户行。
+
+    ⚠ 邮箱对超管是**必需**的（否则无法定位"用户说的那个账号"），但这里刻意不返回
+    密码哈希 / MFA 密钥 / 验证 token 等任何凭据材料 —— 后台是查看运营状态的窗口，
+    不是取密钥的入口。
+    """
+
+    id: int
+    email: EmailStr
+    tier_key: Optional[str] = None  # 空 = free/未订阅
+    role: str = "user"  # user | admin（由 admin_emails 白名单派生的展示角色）
+    email_verified: bool = False
+    mfa_enabled: bool = False
+    is_banned: bool = False
+    banned_at: Optional[str] = None
+    ban_reason: Optional[str] = None
+    locked_until: Optional[str] = None  # 登录失败锁定截止（与封禁无关，勿混为一谈）
+    failed_logins: int = 0
+    song_count: int = 0
+    paid_cny: float = 0  # 该用户累计实付（payment_orders status=paid，本币面值）
+    created_at: Optional[str] = None
+
+
+class AdminUsersOut(BaseModel):
+    total: int
+    items: list[AdminUserOut] = []
+
+
+class BanUserReq(BaseModel):
+    """封禁请求。reason 必填：无理由的封禁在申诉时无法自证（合规与客服都要求它）。"""
+
+    reason: str
+
+
+class ChangeTierReq(BaseModel):
+    """改套餐。tier_key 必须落在 entitlements 的合法档位内（路由层 400 fail-closed）。"""
+
+    tier_key: str
+
+
+class ChangeRoleReq(BaseModel):
+    role: str  # user | admin
+
+
+class RefundReq(BaseModel):
+    """退款：对某一笔已支付订单标记退款 + 撤销订阅权限（复用 billing.apply_refund_event）。"""
+
+    order_id: int
+    reason: Optional[str] = None
+
+
+class SettlementOut(BaseModel):
+    """财务结算汇总（与 /admin/billing 的 Mureka 对账**互补**，不是替代）。
+
+    · /admin/billing  = 供应商侧实时账单 vs 本站估算**成本**（花钱）
+    · /admin/settlement = 本站订单/订阅的**收入**与退款事实（收钱）
+    两者口径不同（一个美元分、一个人民币元），合并成一个响应只会让运维误读。
+    """
+
+    currency: str = "CNY"
+    order_count: int = 0
+    paid_count: int = 0
+    refunded_count: int = 0
+    pending_count: int = 0
+    failed_count: int = 0
+    paid_amount_cny: float = 0  # 已收款（结算等价人民币）
+    refunded_amount_cny: float = 0
+    net_amount_cny: float = 0  # paid - refunded
+    by_provider: dict = {}
+    by_tier: dict = {}
+    active_subscriptions: int = 0
+    total_songs: int = 0
+    total_song_cost_cny: float = 0  # 供应商成本估算（与收入对照看毛利）
+    total_song_revenue_cny: float = 0  # 名义收入（按套餐标准价快照，未接支付时为 notional）
+    total_song_margin_cny: float = 0
+
+
+class FeatureFlagOut(BaseModel):
+    id: int
+    key: str
+    description: str = ""
+    enabled: bool = False
+    rollout: int = 0
+    allow_user_ids: str = ""
+    deny_user_ids: str = ""
+    min_tier: str = ""
+    updated_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class FeatureFlagCreate(BaseModel):
+    key: str
+    description: Optional[str] = ""
+    enabled: Optional[bool] = False
+    rollout: Optional[int] = 0
+    allow_user_ids: Optional[str] = ""
+    deny_user_ids: Optional[str] = ""
+    min_tier: Optional[str] = ""
+
+
+class FeatureFlagUpdate(BaseModel):
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+    rollout: Optional[int] = None
+    allow_user_ids: Optional[str] = None
+    deny_user_ids: Optional[str] = None
+    min_tier: Optional[str] = None
+
+
+class FeatureFlagsMineOut(BaseModel):
+    """前端读取（灰度基础）：当前身份**已生效**的开关集合。
+
+    只下发 True 的 key（见 app/feature_flags.py:resolve_for_user）——
+    前端统一写 `flags[key] === true`，"不存在"与"关闭"在灰度语义里是同一件事。
+    """
+
+    flags: dict[str, bool] = {}

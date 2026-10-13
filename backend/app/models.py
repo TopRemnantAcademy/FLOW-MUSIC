@@ -45,7 +45,13 @@ class User(Base):
     # 用户扫错码的那一刻就把自己锁在门外（无法登录、也无法自行关闭）。
     mfa_enabled = Column(Boolean, default=False, nullable=False, server_default=false())
     failed_logins = Column(Integer, default=0, nullable=False, server_default=text("0"))  # 连续失败计数
+    # GAP-002 登录失败锁定 vs GAP-023 运营封禁：两件事，刻意分成两组列。
+    # 锁定 = 自动、临时、由失败次数触发；封禁 = 人工、持续、由运营决定。
+    # 复用 locked_until 表达封禁会让"锁定期满自动恢复"把封禁一并解除。
     locked_until = Column(DateTime(timezone=True), nullable=True)  # 账户锁定截止时刻
+    is_banned = Column(Boolean, default=False, nullable=False, server_default=false())  # 运营封禁
+    banned_at = Column(DateTime(timezone=True), nullable=True)  # 封禁时刻（None = 从未封禁）
+    ban_reason = Column(String(500), default="", nullable=False, server_default="")  # 封禁理由（申诉/审计用）
 
     # GAP-003 OAuth 身份绑定（Google / Kakao / Naver 授权码登录）。
     # 与 email 并存而非替代：email 是「展示/联系/密码登录」的标识，
@@ -585,4 +591,48 @@ class SongTag(Base):
     song_id = Column(Integer, ForeignKey("songs.id"), index=True, nullable=False)
     tag_id = Column(Integer, ForeignKey("tags.id"), index=True, nullable=False)
     source = Column(String(8), nullable=False, default="auto")  # auto | enum | manual
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GAP-023 运营：特性开关（灰度发布的最小机制）
+#
+# 设计取舍（结论先行）：
+#   · 表而不是 env：env 开关改一次要重启容器，灰度发布要的恰恰是「不重启地开/关」。
+#   · **无 targeting 字段**：只做「按用户 id 取模的百分比灰度 + 强制名单」，
+#     不做地域/设备/套餐多维定向 —— 那套规则一旦写进表，就没人能说清
+#     「这个用户为什么在灰度里」。真要按套餐/地区分，先用两个 flag（见 rollout）。
+#   · 默认关闭（enabled=False / rollout=0）：开关的**存在**不改变任何现有行为，
+#     既有的灰度基线是「全关闭」，打开必须是显式动作。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class FeatureFlag(Base):
+    """特性开关：admin 可改、前端可读的灰度发布基础。
+
+    `rollout`（0–100）是**确定性**灰度：由 `hash(key:user_id) % 100 < rollout` 决定，
+    同一用户对同一开关的判定永远一致 —— 用随机数会让同一用户每次刷新在不同分支间
+    跳变（体验撕裂 + 无法复现问题），这正是灰度机制最容易踩的坑。
+
+    名称沿用 Freemium 的**积分档位**（free/lite/standard/sacred/enterprise），
+    不另造一套枚举：用户侧的套餐字段已经是 `tier_key`，两处各写一套必然漂移。
+    """
+
+    __tablename__ = "feature_flags"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(64), unique=True, nullable=False, index=True)  # 如 song_stem_export
+    description = Column(String(255), nullable=False, default="")
+    enabled = Column(Boolean, default=False, nullable=False, server_default=false())
+    # 灰度百分比 0–100（0 = 关闭；非 0 仍需 enabled=True 才生效，见 app/feature_flags.py）
+    rollout = Column(Integer, default=0, nullable=False, server_default="0")
+    # 仅对这些用户强制开启（comma-separated user id）。刻意用字符串而非关联表：
+    # 名单是「临时手挑的几个账号」，关联表要 JOIN 才能看全，而这里要看的就是那一串数字。
+    allow_user_ids = Column(Text, default="", nullable=False, server_default="")
+    # 仅对这些用户强制关闭（灰度期排障用；优先级高于 allow/rollout）
+    deny_user_ids = Column(Text, default="", nullable=False, server_default="")
+    # 最低套餐门槛（"" = 不限）。灰度期用来「先给付费用户开」，
+    # 与 rollout 是两个正交维度：门槛决定"谁能"，百分比决定"其中多少人"。
+    min_tier = Column(String(32), nullable=False, default="", server_default="")
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now())

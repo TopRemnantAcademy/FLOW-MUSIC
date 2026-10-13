@@ -384,6 +384,37 @@ def get_active_subscription(db: Session, user_id: int) -> Subscription | None:
     return sub
 
 
+def enforce_ban(db: Session, user) -> None:
+    """被封禁账号的访问回收（GAP-023）。
+
+    与 enforce_subscription_validity 同一处调用点（auth.get_current_user，所有
+    鉴权请求的必经之路），理由也一样：没有调度器，**不在访问时回收就等于不回收**。
+    封禁若只在登录口拦，「封禁前已签发、24h 内仍有效」的那张令牌会照常通过
+    —— 运营看到的现象是"封了他还能用"，然后合理地质疑封禁是不是没生效。
+
+    回收的是**订阅**（未到期的付费权益）：`tier_key` 降回 free 并把订阅置 cancelled，
+    否则被封禁账号仍带着付费权限（且其已支付期内的退款/对账会算错）。
+    ⚠ 不在这里改 users.is_banned 本身（那是 admin 的动作，这里是只读判定）。
+    ⚠ 每分钟最多回收一次？不需要：这里只在 is_banned 为真时执行，且写操作幂等
+      （已是 free 时直接早退，见下方 guard）。
+    """
+    if user is None:
+        return
+    if not bool(getattr(user, "is_banned", False)):
+        return
+    tier = (getattr(user, "tier_key", None) or "").strip().lower()
+    sub = db.query(Subscription).filter(Subscription.user_id == user.id).first()
+    if (not tier or tier == FREE_TIER) and (sub is None or sub.status == "cancelled"):
+        return  # 已是回收后的状态：不重复写（热路径每请求都会走到这里）
+    if tier and tier != FREE_TIER:
+        user.tier_key = None
+    if sub is not None and sub.status != "cancelled":
+        sub.status = "cancelled"
+        sub.cancel_at_period_end = False
+        sub.current_period_end = _utcnow()
+    db.commit()
+
+
 def enforce_subscription_validity(db: Session, user) -> bool:
     """만료/취소된 구독의 권한을 **접근 시점에** 회수한다(lazy revocation).
 

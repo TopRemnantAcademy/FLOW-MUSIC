@@ -200,6 +200,72 @@ export type UserLinkRow = {
   linked_at: string | null;
 };
 
+// —— GAP-023 admin 运营扩展：用户管理 / 财务结算 / 特性开关 ——
+// 与 backend/app/schemas.py 一一对应（字段名写错时 tsc 当场报错，而不是运行时 422）。
+
+export type AdminUserRow = {
+  id: number;
+  email: string;
+  tier_key: string | null; // null = free/未订阅
+  role: string; // 恒为 "user"：管理员身份是共享密钥，与 users 表无关（见后端 501 说明）
+  email_verified: boolean;
+  mfa_enabled: boolean;
+  is_banned: boolean;
+  banned_at: string | null;
+  ban_reason: string | null;
+  locked_until: string | null; // 登录失败锁定（自动/临时，与封禁是两件事）
+  failed_logins: number;
+  song_count: number;
+  paid_cny: number; // 该用户累计实付（本币面值求和由后端用 amount_cny 统一）
+  created_at: string | null;
+};
+
+export type AdminUsersPage = { total: number; items: AdminUserRow[] };
+
+// 财务结算汇总（收入侧）。⚠ 与后端 /admin/billing（成本侧 Mureka 对账）互补，两者口径不同。
+export type Settlement = {
+  currency: string;
+  order_count: number;
+  paid_count: number;
+  refunded_count: number;
+  pending_count: number;
+  failed_count: number;
+  paid_amount_cny: number;
+  refunded_amount_cny: number;
+  net_amount_cny: number;
+  by_provider: Record<string, number>;
+  by_tier: Record<string, number>;
+  active_subscriptions: number;
+  total_songs: number;
+  total_song_cost_cny: number;
+  total_song_revenue_cny: number;
+  total_song_margin_cny: number;
+};
+
+// 特性开关（灰度发布）。rollout=百分比，allow/deny 为逗号分隔 user id，min_tier 为空=不限。
+export type FeatureFlagRow = {
+  id: number;
+  key: string;
+  description: string;
+  enabled: boolean;
+  rollout: number;
+  allow_user_ids: string;
+  deny_user_ids: string;
+  min_tier: string;
+  updated_at: string | null;
+  created_at: string | null;
+};
+
+// 判定预览：不落库，回答"按现在的配置这个用户会看到吗"（含逐层依据）
+export type FeatureFlagPreview = {
+  key: string;
+  user_id: number | null;
+  tier_key: string | null;
+  enabled: boolean;
+  steps: Record<string, boolean>;
+  rule: string;
+};
+
 // —— 用户侧用量/账单（GAP-005）：本人歌曲范围内的单位经济汇总 ——
 export type MyBillingSong = {
   id: number;
@@ -840,6 +906,75 @@ export const api = {
       ? "?" + new URLSearchParams(params).toString()
       : "";
     return requestAdmin<UserLinkRow[]>(`/api/admin/user-links${qs}`);
+  },
+  // —— GAP-023 用户管理 ——
+  adminUsers: (opts?: { q?: string; tierKey?: string; banned?: boolean; limit?: number; offset?: number }) => {
+    const params: Record<string, string> = {};
+    if (opts?.q) params.q = opts.q;
+    if (opts?.tierKey) params.tier_key = opts.tierKey;
+    if (opts?.banned != null) params.banned = String(opts.banned);
+    if (opts?.limit != null) params.limit = String(opts.limit);
+    if (opts?.offset != null) params.offset = String(opts.offset);
+    const qs = Object.keys(params).length ? "?" + new URLSearchParams(params).toString() : "";
+    return requestAdmin<AdminUsersPage>(`/api/admin/users${qs}`);
+  },
+  adminUser: (id: number) => requestAdmin<AdminUserRow>(`/api/admin/users/${id}`),
+  // 封禁必须给理由：后端 400（无理由封禁在申诉时无法自证）
+  adminBanUser: (id: number, reason: string) =>
+    requestAdmin<AdminUserRow>(`/api/admin/users/${id}/ban`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+  adminUnbanUser: (id: number) =>
+    requestAdmin<AdminUserRow>(`/api/admin/users/${id}/unban`, { method: "POST" }),
+  // tier_key 合法值 = 后端 entitlements.VALID_TIERS（free/lite/standard/sacred/enterprise）
+  adminSetUserTier: (id: number, tierKey: string) =>
+    requestAdmin<AdminUserRow>(`/api/admin/users/${id}/tier`, {
+      method: "POST",
+      body: JSON.stringify({ tier_key: tierKey }),
+    }),
+  // —— GAP-023 财务结算（成本侧对账仍是 api.adminBilling，两者互补）——
+  adminSettlement: (days?: number) =>
+    requestAdmin<Settlement>(`/api/admin/settlement${days ? `?days=${days}` : ""}`),
+  // CSV 导出：走浏览器直链下载（带 cookie），不经 fetch —— 大表不必经过 JS 内存
+  adminSettlementCsvUrl: (opts?: { status?: string; provider?: string; days?: number }) => {
+    const params: Record<string, string> = {};
+    if (opts?.status) params.status = opts.status;
+    if (opts?.provider) params.provider = opts.provider;
+    if (opts?.days != null) params.days = String(opts.days);
+    const qs = Object.keys(params).length ? "?" + new URLSearchParams(params).toString() : "";
+    return `${API_BASE}/api/admin/settlement/export${qs}`;
+  },
+  adminInvoicesCsvUrl: (days?: number) =>
+    `${API_BASE}/api/admin/invoices/export${days != null ? `?days=${days}` : ""}`,
+  // ⚠ 本地账务动作：**不发起**真实退款（钱要在供应商后台退），只把本站的账与权限同步过来。
+  adminRefundOrder: (orderId: number, reason?: string) =>
+    requestAdmin<{ ok: boolean; order_id: number; status: string }>(
+      `/api/admin/orders/${orderId}/refund`,
+      { method: "POST", body: JSON.stringify({ order_id: orderId, reason: reason || "" }) },
+    ),
+  // —— GAP-023 特性开关 ——
+  adminFeatureFlags: () => requestAdmin<FeatureFlagRow[]>("/api/admin/feature-flags"),
+  adminCreateFeatureFlag: (body: Record<string, unknown>) =>
+    requestAdmin<FeatureFlagRow>("/api/admin/feature-flags", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminUpdateFeatureFlag: (key: string, body: Record<string, unknown>) =>
+    requestAdmin<FeatureFlagRow>(`/api/admin/feature-flags/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  adminDeleteFeatureFlag: (key: string) =>
+    requestAdmin(`/api/admin/feature-flags/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  adminPreviewFeatureFlag: (key: string, userId?: number, tierKey?: string) => {
+    const params: Record<string, string> = {};
+    if (userId != null) params.user_id = String(userId);
+    if (tierKey) params.tier_key = tierKey;
+    const qs = Object.keys(params).length ? "?" + new URLSearchParams(params).toString() : "";
+    return requestAdmin<FeatureFlagPreview>(
+      `/api/admin/feature-flags/${encodeURIComponent(key)}/preview${qs}`,
+    );
   },
 };
 
