@@ -481,6 +481,15 @@ export type ConfigDashboard = {
   pending_moderation: number;
 };
 
+export type ReleaseNotesResponse = {
+  app_version: string;
+  latest_version: string | null;
+  has_update: boolean;
+  channel: string;
+  published_at: string | null;
+  notes: string[];
+};
+
 async function request<T = any>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -544,6 +553,9 @@ export const api = {
   login: (email: string, password: string): Promise<{ access_token: string }> =>
     request("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   // ── Google OAuth ──
+  // ── GAP-040 应用内更新日志 ──
+  // 公开端点（无需登录）：页面拉不到时降级为内置静态要点，不阻塞渲染。
+  releaseNotes: () => request<ReleaseNotesResponse>("/api/release/notes"),
   googleConfig: () => request<{ enabled: boolean; client_id: string }>("/api/auth/google/config"),
   loginWithGoogle: (idToken: string): Promise<{ access_token: string }> =>
     request("/api/auth/google", { method: "POST", body: JSON.stringify({ id_token: idToken }) }),

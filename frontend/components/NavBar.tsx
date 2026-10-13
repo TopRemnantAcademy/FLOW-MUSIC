@@ -13,6 +13,8 @@ const LINKS = [
   { href: "/plaza", label: "广场" },
   { href: "/library", label: "我的作品" },
   { href: "/account", label: "账户" },
+  // GAP-040：更新日志是面向所有用户（含未登录）的功能说明，故常驻公共导航。
+  { href: "/release-notes", label: "更新" },
 ];
 
 export default function NavBar() {

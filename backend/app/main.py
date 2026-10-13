@@ -12,7 +12,7 @@ from app.audit import log_admin_access
 from app.config import settings
 from app.db import init_db
 from app.mureka_health import run_startup_preflight
-from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share, lyrics, export
+from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share, lyrics, export, release
 from app.routers.auth import _resolve_admin_role
 
 log = logging.getLogger("music-api")
@@ -198,6 +198,8 @@ app.include_router(share.router)
 # 与 songs.router 同前缀 /api/songs，只是把「歌词」这一独立闭环拆出来，
 # 免得本已 2300 行的 songs.py 继续膨胀（见 routers/lyrics.py 模块注释）。
 app.include_router(lyrics.router)
+# 应用内更新日志（GAP-040）：当前版本 / 是否有新版本 / 要点（无 DB 依赖）
+app.include_router(release.router)
 
 
 @app.get("/health")

@@ -1,14 +1,15 @@
 {
   "name": "ai-music-frontend",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:contract": "node tests/mureka-ui-contract.test.cjs && node tests/gap013-player.test.cjs",
-    "typecheck": "tsc --noEmit"
+"test:contract": "node tests/mureka-ui-contract.test.cjs && node tests/gap013-player.test.cjs",
+    "typecheck": "tsc --noEmit",
+    "check:release": "node scripts/check-release-notes.mjs --strict"
   },
   "dependencies": {
     "next": "^16.3.8",
