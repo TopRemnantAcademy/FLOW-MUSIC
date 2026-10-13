@@ -42,11 +42,38 @@ def get_optional_user(
     db: Session = Depends(get_db),
     token: Optional[str] = Depends(oauth2_optional),
 ) -> Optional[User]:
+    """带 token 时解析出登录用户；无 token / token 无效 → None（不阻断公开浏览）。
+
+    ⚠ 本函数**没有** `request` 形参，所以走的是 plaza 自建的可选认证，而不是
+    `auth.get_optional_user`（后者需要 Request）。两条路径必须解码口径一致，
+    否则「同一个 token，点进作品详情认得出你、点开广场却认不出」——正是本轮
+    #83 实测到的问题。
+
+    🔴 [SEC] `options={"verify_aud": False}` **不是**放宽校验，而是**补上**原实现
+    漏掉的那一项：`create_token`（auth.py）自 2026-09-13 起在载荷里写入
+    `iss`/`aud`，而 python-jose 的默认 `verify_aud=True` 在**不传 audience** 时
+    会落到 `None not in ["flow-music-platform"]` → 抛 `JWTClaimsError`。
+    原实现用裸 `except Exception: return None` 吞掉了它，于是**所有带 token 的请求
+    都被静默降级成匿名**（广场 liked_by_me 恒 False、作者视角失效）。
+    修法二选一：(a) 传 `audience=`/`issuer=` 做真实校验；(b) 关掉 aud 校验但
+    **显式**接受这个决定。这里选 (b)：本端点只服务已登录用户的可选回显，
+    真正的令牌校验由 `get_current_user`（含 aud/iss，fail-closed）负责；
+    匿名降级不是安全边界 —— 伪造 token 在这里最多"看起来像某个用户"，
+    而任何写操作都走 `get_current_user`。
+
+    另：**不带** `iss` 的老 token（2026-09-13 之前签发、未过期）保持可用 ——
+    这是保留 (b) 的第二个理由：换签名口径不该让存量会话集体掉线。
+    """
     if not token:
         return None
     try:
         _assert_jwt_secret_configured()
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=["HS256"],
+            options={"verify_aud": False},
+        )
         uid = int(payload.get("sub"))
         # 最小权限：scope 한정 토큰은 전권한 엔드포인트에서 무효
         if "scope" in payload:

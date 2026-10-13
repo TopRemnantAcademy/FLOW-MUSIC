@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { api, SongView } from "@/lib/api";
 import { trackSearch } from "@/lib/eventReporter";
 import Player from "@/components/Player";
@@ -123,9 +124,22 @@ function InteractRow({
 }) {
   return (
     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-[var(--border)] pt-3 text-sm">
-      <span className="text-[var(--muted)]">
-        {song.author_name ? `by ${song.author_name}` : "社区作品"}
-      </span>
+      {/* GAP-015：作者名可点进公开资料页（/api/users/{id}）。
+          author_id 缺失时（老数据/异常行）退化为纯文本 —— 宁可不可点，
+          也不要造一个 href="/u/undefined" 的死链接。 */}
+      {song.author_id != null ? (
+        <Link
+          href={`/u/${song.author_id}`}
+          className="text-[var(--muted)] underline-offset-4 transition hover:text-[var(--ink)] hover:underline"
+          aria-label={`查看 ${song.author_name || "作者"} 的主页`}
+        >
+          {song.author_name ? `by ${song.author_name}` : "社区作品"}
+        </Link>
+      ) : (
+        <span className="text-[var(--muted)]">
+          {song.author_name ? `by ${song.author_name}` : "社区作品"}
+        </span>
+      )}
 
       <button
         onClick={onLike}

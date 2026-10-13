@@ -327,6 +327,9 @@ def _to_out(
         favorited_by_me=st.get("favorited_by_me", False),
         my_rating=st.get("my_rating"),
         author_name=st.get("author_name"),
+        # GAP-015：作者 id 随名一起下发（脱敏名只能展示、不能导航）。
+        # 刻意不给它做「谁看过谁」之类的语义，它只是"这行数据属于哪个可公开访问的 id"。
+        author_id=song.user_id,
         content_category=song.content_category or None,
         lyrics_sync=lyrics_sync_out,
         # [SEC] 2026-09-13: 원가(cost_cny) 는 **소유자에게만** 노출.

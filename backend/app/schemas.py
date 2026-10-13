@@ -306,7 +306,11 @@ class SongOut(BaseModel):
     liked_by_me: bool = False
     favorited_by_me: bool = False
     my_rating: Optional[int] = None  # 当前用户给出的分数（未评分 None）
-    author_name: Optional[str] = None  # 广场展示用发布者标识（不出邮箱）
+    # 发布者标识（后端已脱敏，不出邮箱）。GAP-015 起**同页附带 user_id**：
+    # 「能点进作者主页」需要 id；只给脱敏名就只能展示不能导航。
+    # ⚠ 它是**用户 id（非敏感）**，与 AdminSongOut.user_email 无关 —— 邮箱永不进本模型。
+    author_name: Optional[str] = None
+    author_id: Optional[int] = None
     content_category: Optional[str] = None
     cost_cny: Optional[float] = None
     # ---- 프리미엄 시청 게이트（미구독 = 앞 N초 프리뷰） ----

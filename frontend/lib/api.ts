@@ -54,6 +54,9 @@ export type SongView = {
   favorited_by_me?: boolean;
   my_rating?: number | null;
   author_name?: string | null;  // 发布者标识（后端已脱敏，不出完整邮箱）
+  // GAP-015：发布者 id，用于跳转公开资料页 /u/{id}；它随 author_name 一起下发
+  // （只有脱敏名就只能展示不能导航）。非敏感字段，邮箱仍然不出现在 SongView。
+  author_id?: number | null;
   // 发布后置：完成 + 审核通过才允许公开
   moderation_status?: string;
   moderation_note?: string | null;
@@ -184,6 +187,27 @@ export type SharedSongView = {
   license?: string;
   moderation_status?: string;
   expires_at: number;
+};
+
+/**
+ * GAP-015 公开资料页（只读）。
+ *
+ * ⚠ 后端响应是**白名单**模型（routers/users.py:PublicProfileOut），
+ * 这里刻意不声明 email / 凭据 / 封禁字段 —— 类型层面也不给这些字段留位置，
+ * 免得有人以为"反正拿得到"。
+ *
+ * Follow / Comment **尚未实现**（无表 → 无端点）。这里不预留 follower_count /
+ * comment_count 之类的字段：留了就会有人在 UI 上渲染 0，把"没做"装成"做了"。
+ */
+export type PublicProfile = {
+  id: number;
+  display_name: string;
+  member_since?: string | null;   // "YYYY-MM"（只到月，避免精确时间戳当准标识符）
+  public_song_count: number;
+  likes_received: number;
+  // true = display_name 只是「邮箱局部名占位」（GAP-047 的 display_name 列尚未迁移）
+  display_name_is_placeholder: boolean;
+  is_me: boolean;
 };
 
 export type SpawnParams = {
@@ -869,6 +893,16 @@ export const api = {
       body: JSON.stringify({ score }),
     }),
   myFavorites: () => request<SongView[]>("/api/plaza/favorites"),
+  // ── GAP-015 公开资料页（只读；Follow / 评论待迁移槽放开后实现）──
+  // 匿名可读（与广场一致）：能看到谁的作品，就应能点进作者主页。
+  publicProfile: (id: number) => request<PublicProfile>(`/api/users/${id}`),
+  profileSongs: (id: number, opts: { limit?: number; offset?: number } = {}) => {
+    const params: Record<string, string> = {};
+    if (opts.limit != null) params.limit = String(opts.limit);
+    if (opts.offset != null) params.offset = String(opts.offset);
+    const qs = Object.keys(params).length ? "?" + new URLSearchParams(params).toString() : "";
+    return request<SongView[]>(`/api/users/${id}/songs${qs}`);
+  },
   // ── GAP-011 库组织：播放列表 / 文件夹 / 批量 / 回收站 ──
   playlists: () => request<PlaylistView[]>("/api/library/playlists"),
   createPlaylist: (name: string, opts: { description?: string; is_public?: boolean } = {}) =>

@@ -12,7 +12,7 @@ from app.audit import log_admin_access
 from app.config import settings
 from app.db import init_db
 from app.mureka_health import run_startup_preflight
-from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share, lyrics, export, release
+from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share, lyrics, export, release, users
 from app.routers.auth import _resolve_admin_role
 
 log = logging.getLogger("music-api")
@@ -192,6 +192,10 @@ app.include_router(plaza.router)
 app.include_router(library.router)
 # 搜索/发现（GAP-014）：标签浏览 + 按标签筛选 + 相似推荐 + 时间窗趋势
 app.include_router(search.router)
+# 公开资料页（GAP-015 只读部分）：GET /api/users/{id} + /songs。
+# ⚠ 前缀 /api/users 与 admin 的 /api/admin/users/* 不重叠（后者带 admin 段），
+# 但注册顺序仍放在 admin 之后，避免将来有人给两个前缀做「通配收口」时踩到歧义。
+app.include_router(users.router)
 # 无状态分享链接（GAP-013）：HMAC 签名 token，匿名可访问
 app.include_router(share.router)
 # 歌词编辑（GAP-012）：LRC 导出/导入 + 行级时间轴编辑 + 改词后重对齐。
