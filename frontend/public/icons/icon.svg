@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="FLOW">
+  <rect width="512" height="512" fill="#0f0f0f"/>
+  <g fill="none" stroke="#f5f5f5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M186 168v176" stroke-width="34"/>
+    <path d="M256 128v256" stroke-width="34"/>
+    <path d="M326 196v120" stroke-width="34"/>
+    <path d="M396 232v48" stroke-width="34"/>
+  </g>
+</svg>
