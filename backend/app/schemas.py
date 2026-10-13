@@ -237,6 +237,40 @@ class GenerateResp(BaseModel):
     status: str
 
 
+class SongExportRow(BaseModel):
+    """GAP-028 批量导出的元数据行（CSV 列 / zip 内 metadata.csv 同为这一张表）。
+
+    为什么单列一个模型而不是复用 SongOut：SongOut 是**分发契约**（含 `cost_cny`
+    / `can_download` / 登录态字段），导出要的是**可对账的扁平事实**。两者混用会让
+    「给播放器的接口」被迫跟着「给 Excel 的列」变动，反之亦然。
+    字段口径与 SongOut 逐一对齐（title/style/duration/created_at/play_count/
+    like_count/moderation_status/audio_format/license...），故用户看到的两处一致。
+    """
+
+    model_config = ConfigDict(protected_namespaces=())  # model_version 与 pydantic 前缀冲突
+
+    id: int
+    title: str
+    style: str = ""
+    duration: int = 0
+    created_at: str = ""
+    play_count: int = 0
+    like_count: int = 0
+    favorite_count: int = 0
+    rating_avg: float | None = None
+    rating_count: int = 0
+    status: str = ""
+    task_type: str = "generate"
+    model_version: str = ""
+    content_category: str = ""
+    license: str = ""
+    is_public: bool = False
+    moderation_status: str = ""
+    audio_format: str = "mp3"
+    audio_url: str = ""
+    cover_url: str = ""
+
+
 class SongOut(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 

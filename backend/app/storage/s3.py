@@ -92,6 +92,25 @@ def upload(path: str, key: str) -> str:
     return upload_file(path, key, content_type="audio/mpeg")
 
 
+def presigned_url(key: str, expires_in: int = 3600) -> str:
+    """生成**一次性**（带签名、会过期）的下载链接。
+
+    GAP-028 批量导出的产物是「我的全部作品音频」——它比单曲公开链接敏感得多，
+    不能走 `_public_url`（那是给播放链路用的长期公开地址）。签名 URL 的授权
+    写在 query 里（SigV4），过期即失效，故导出物不需要额外的鉴权网关。
+
+    ⚠ 未配置存储时抛 RuntimeError（调用方负责降级），不返回空串：
+    空串会被前端当成「链接打不开」，而真正的问题是「这条通道不可用」。
+    """
+    if not is_configured():
+        raise RuntimeError("对象存储未配置")
+    return _client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.storage_bucket, "Key": key},
+        ExpiresIn=int(expires_in),
+    )
+
+
 def object_exists(key: str) -> bool:
     """对象是否已在桶里。未配置存储 / 无凭证 / 网络异常一律返回 False（不抛）。
 

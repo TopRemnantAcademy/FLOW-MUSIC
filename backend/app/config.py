@@ -158,6 +158,14 @@ class Settings(BaseSettings):
         30  # 单用户每分钟试听片段生成上限（防 ffmpeg 资源耗尽 CWE-400）
     )
     download_rate_limit_per_minute: int = 20  # 单用户每分钟完整下载上限（防带宽/对象存储成本滥用）
+    # GAP-028 批量导出限流：一次导出 = N 首完整音频（下载 + 打包），放大倍数远高于单曲下载
+    export_rate_limit_per_minute: int = 3  # 单用户每分钟批量导出上限（429）
+    # GAP-028 打包护栏（防滥用 CWE-400）：曲目数上限是**硬 400**（见 routers/export.py），
+    # 这两项是体积闸门 —— 单曲超限的跳过并在 zip 内 export-notes.txt 如实汇报，不整批失败。
+    export_max_total_mb: int = 512  # 单次导出 zip 的原始音频总体积上限（MB）
+    export_max_song_mb: int = 100  # 单曲体积上限（MB），超过则跳过该曲
+    # 一次性下载链接有效期（秒）：对象存储路径 = presign 有效期；本地降级路径 = 临时包 TTL。
+    export_url_ttl_seconds: int = 3600
     vocal_clone_rate_limit_per_minute: int = 10  # 单用户每分钟音色克隆上限（上游按量计费，防烧钱）
     # ⏸ 音色克隆（vocal-clone）**产品暂停**（2026-09-13 决策）：默认关闭 →
     #   POST /api/songs/vocal-clone 返回 501「功能已暂停」。

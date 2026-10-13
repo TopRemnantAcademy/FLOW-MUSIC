@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, FolderView, PlaylistView, SongView, TrashItem } from "@/lib/api";
+import { api, ExportResult, FolderView, PlaylistView, SongView, TrashItem } from "@/lib/api";
 import Player from "@/components/Player";
 import ConfirmDialog from "@/components/ConfirmDialog";
 
@@ -31,6 +31,15 @@ export default function LibraryPage() {
   const [trash, setTrash] = useState<TrashItem[]>([]);
   const [trashLoading, setTrashLoading] = useState(false);
   const [pendingPurge, setPendingPurge] = useState<TrashItem | null>(null);
+
+  // ── GAP-028 批量导出 ──
+  // 与 GAP-011 的 `selected` 复用同一份多选集合：库页只有一个「选中」概念
+  // （勾选 → 批量公开/下架/删除/加歌单/导出），再开一个 exportSelected 会立刻分叉出
+  // 「导出的是哪一批」的歧义。区别只在**已完成的曲目**才能进导出（后端 400 会把
+  // 未完成的一并拒绝），故这里显式过滤并在 UI 上说明。
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportCsvBusy, setExportCsvBusy] = useState(false);
+  const [exportResult, setExportResult] = useState<ExportResult | null>(null);
 
   // 分轨导出（stem）：同步接口，结果含会过期的 zip 链接。
   const [stemBusy, setStemBusy] = useState<number | null>(null);
@@ -211,6 +220,68 @@ export default function LibraryPage() {
       setNotice(`《${s.title || "未命名"}》已移入回收站，30 天内可恢复`);
     } catch (e: any) {
       setError(e?.message || "删除失败");
+    }
+  }
+
+  // ── GAP-028 批量导出 ──
+  /** 勾选里**可导出**的曲目：只导已完成的（后端对未完成的作品返回 400）。 */
+  const exportableIds = songs.filter((s) => selected.includes(s.id) && s.status === "completed").map((s) => s.id);
+  const selectedUnfinished = selected.length - exportableIds.length;
+
+  function formatBytes(n: number): string {
+    if (!n) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+    return `${(n / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  }
+
+  /** 触发浏览器下载：签名链接(绝对)与新窗口打开，同源 token 链接也走 href，
+   *  但**必须**带 cookie —— 用 <a> 而非 fetch，浏览器会自动带上同源 cookie。 */
+  function triggerDownload(url: string) {
+    const a = document.createElement("a");
+    a.href = url.startsWith("/") ? `${process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000"}${url}` : url;
+    a.rel = "noreferrer";
+    a.click();
+  }
+
+  async function onExportZip() {
+    if (exportableIds.length === 0) return;
+    setExportBusy(true);
+    setError("");
+    setExportResult(null);
+    setNotice("");
+    try {
+      const r = await api.exportSongs(exportableIds);
+      setExportResult(r);
+      const skipped = r.skipped?.length ? `，跳过 ${r.skipped.length} 首` : "";
+      setNotice(
+        `导出包已就绪：${r.song_count} 首、${formatBytes(r.total_bytes)}${skipped}。链接会过期，请尽快下载。`
+      );
+      // 自动触发一次下载（同时保留链接供再次领取）
+      if (r.url) triggerDownload(r.url);
+    } catch (e: any) {
+      setError(e?.message || "批量导出失败");
+    } finally {
+      setExportBusy(false);
+    }
+  }
+
+  async function onExportCsv(all = false) {
+    setExportCsvBusy(true);
+    setError("");
+    try {
+      const blob = await api.exportCsv(all ? undefined : exportableIds);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "my-songs.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+      setNotice(all ? "已导出全部作品的元数据 CSV" : `已导出 ${exportableIds.length} 首的元数据 CSV`);
+    } catch (e: any) {
+      setError(e?.message || "导出 CSV 失败");
+    } finally {
+      setExportCsvBusy(false);
     }
   }
 
@@ -418,6 +489,89 @@ export default function LibraryPage() {
               >
                 批量删除
               </button>
+              <span className="mx-1 h-4 w-px bg-[var(--line)]" aria-hidden />
+              <button
+                disabled={exportableIds.length === 0 || exportBusy}
+                onClick={onExportZip}
+                className="btn btn-primary btn-sm"
+                title={
+                  exportableIds.length === 0
+                    ? "先勾选已完成的作品"
+                    : `打包 ${exportableIds.length} 首（音频 + metadata.csv）`
+                }
+              >
+                {exportBusy ? "打包中…" : `导出 ZIP（${exportableIds.length}）`}
+              </button>
+              <button
+                disabled={(selected.length === 0 && songs.length === 0) || exportCsvBusy}
+                onClick={() => onExportCsv(false)}
+                className="btn btn-secondary btn-sm"
+                title="导出已勾选曲目的元数据（CSV，Excel 可直接打开）"
+              >
+                {exportCsvBusy ? "导出中…" : "导出 CSV"}
+              </button>
+              <button
+                disabled={songs.length === 0 || exportCsvBusy}
+                onClick={() => onExportCsv(true)}
+                className="btn btn-secondary btn-sm"
+                title="导出我的全部作品元数据（最多 200 首）"
+              >
+                全部 CSV
+              </button>
+            </div>
+          )}
+
+          {selected.length > 0 && (
+            <p className="mb-3 text-xs text-[var(--muted)]">
+              已选 {selected.length} 首
+              {selectedUnfinished > 0 && (
+                <>
+                  ，其中 {selectedUnfinished} 首未生成完成
+                  <span className="text-[var(--warning,inherit)]">不会</span>进入导出包
+                </>
+              )}
+              ：勾选既用于批量公开/下架/删除/加歌单，也用于批量导出。
+            </p>
+          )}
+
+          {exportResult && (
+            <div className="card mb-4 p-3 text-sm">
+              <p className="mb-1 font-medium text-[var(--ink)]">
+                导出包已就绪（{exportResult.song_count} 首 / {formatBytes(exportResult.total_bytes)}）
+              </p>
+              <p className="mb-2 text-xs text-[var(--muted)]">
+                包含每首音频 + <code>metadata.csv</code>（UTF-8 BOM，Excel 可直接打开）。
+                {exportResult.expires_at_iso
+                  ? `链接失效时间：${exportResult.expires_at_iso.replace("T", " ").slice(0, 16)} UTC。`
+                  : "链接会过期，请尽快保存。"}
+              </p>
+              {exportResult.skipped?.length > 0 && (
+                <ul className="mb-2 list-inside list-disc text-xs text-[var(--muted)]">
+                  {exportResult.skipped.slice(0, 5).map((r) => (
+                    <li key={r}>{r}</li>
+                  ))}
+                  {exportResult.skipped.length > 5 && <li>…共 {exportResult.skipped.length} 条</li>}
+                </ul>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => triggerDownload(exportResult.url)}
+                  className="btn btn-primary btn-sm"
+                >
+                  再次下载
+                </button>
+                <button
+                  onClick={() => setExportResult(null)}
+                  className="btn btn-secondary btn-sm"
+                >
+                  收起
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-[var(--muted)]">
+                {exportResult.storage === "local"
+                  ? "当前未配置对象存储，导出包保存在服务器临时目录，领取一次后即失效。"
+                  : "导出包存放在对象存储，凭签名链接一次性下载。"}
+              </p>
             </div>
           )}
 

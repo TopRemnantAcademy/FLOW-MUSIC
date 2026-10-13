@@ -12,7 +12,7 @@ from app.audit import log_admin_access
 from app.config import settings
 from app.db import init_db
 from app.mureka_health import run_startup_preflight
-from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share, lyrics
+from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share, lyrics, export
 from app.routers.auth import _resolve_admin_role
 
 log = logging.getLogger("music-api")
@@ -178,6 +178,11 @@ async def admin_rbac_audit(request: Request, call_next):
 
 
 app.include_router(auth.router)
+# GAP-028 批量导出：**必须排在 songs.router 之前**。
+# `songs.router` 里有 `GET /{song_id}` 通配路径参数，先注册它会把
+# `/api/songs/export.csv` 吃成 song_id="export.csv" → 422（实测），
+# 从而遮住导出端点。FastAPI 按注册顺序匹配，先注册者胜。
+app.include_router(export.router)
 app.include_router(songs.router)
 app.include_router(flow.router)
 app.include_router(admin.router)

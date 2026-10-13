@@ -89,6 +89,18 @@ export type LrcImportResult = {
   notes: string[];
 };
 
+// GAP-028 批量导出结果。`storage` 区分链接来源，仅用于展示提示文案
+// （s3 = 签名链接直接拉；local = 同源一次性 token 链接）。
+export type ExportResult = {
+  url: string;
+  song_count: number;
+  skipped: string[];        // 未打包的曲目及原因（体积超限/无音频/下载失败）
+  total_bytes: number;
+  expires_at?: number | null;
+  expires_at_iso?: string | null;
+  storage?: "s3" | "local";
+};
+
 // ── GAP-011 库组织 ──
 // 回收站条目：SongView + 删除时刻/到期时刻/剩余天数（days_left 由后端算，前端只显示）
 export type TrashItem = SongView & {
@@ -755,6 +767,29 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // ── GAP-028 批量导出：多选 zip（音频 + 内置 metadata.csv）+ 独立元数据 CSV ──
+  // 两个端点的**返回形状一致**（storage 配没配都一样），前端不需要分支：
+  //   · 配了对象存储 → presign 一次性签名链接（绝对 URL，直接 <a download> 拉取）
+  //   · 没配         → 本地临时包 + /api/songs/export/download/{token}（同源，带 cookie）
+  // url 会过期（expires_at_iso），页面必须把这一点显式告知用户。
+  exportSongs: (songIds: number[]) =>
+    request<ExportResult>("/api/songs/export", {
+      method: "POST",
+      body: JSON.stringify({ song_ids: songIds }),
+    }),
+  // 元数据 CSV（UTF-8 + BOM）。ids 留空 = 导出全部（后端上限 200 首）。
+  // 返回 Blob 而非 JSON：文本 CSV 不是 JSON，走 request() 会在 res.json() 上炸掉。
+  exportCsv: async (songIds?: number[]): Promise<Blob> => {
+    const qs = songIds && songIds.length ? `?ids=${songIds.join(",")}` : "";
+    const res = await fetch(`${API_BASE}/api/songs/export.csv${qs}`, {
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new ApiError((err as any).detail || "导出 CSV 失败", res.status);
+    }
+    return res.blob();
+  },
   // 同步接口：直接返回 zip_url，**会过期**（expires_at 为秒级 Unix 时间戳，
   // expires_at_iso 为后端换算好的 ISO 字符串，前端直接展示即可）。
   stem: (id: number, model: string = "audio-separation-2") =>

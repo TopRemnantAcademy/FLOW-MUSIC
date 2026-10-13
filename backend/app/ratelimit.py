@@ -150,3 +150,15 @@ def rate_limit_reset_password(ip: str) -> None:
         settings.reset_password_rate_limit_per_minute,
         "요청이 너무 잦습니다. 잠시 후 다시 시도하세요",
     )
+
+
+def rate_limit_export(user_key: str) -> None:
+    """GAP-028 批量导出限流（2026-10-12）：一次导出要下载 N 首完整音频并打包，
+    带宽/CPU/磁盘都是 O(N)。无限流时单用户脚本循环调用即可把本机打满
+    （CWE-400），而它比单曲下载的放大倍数高两个数量级（100 首/次 vs 1 首/次）。"""
+    _sliding_window(
+        f"export:{user_key}",
+        60.0,
+        settings.export_rate_limit_per_minute,
+        "导出请求过于频繁，请稍后再试",
+    )
