@@ -148,8 +148,7 @@ export default function AuthBar() {
               <button
                 type="button"
                 onClick={googleLogin}
-                className="btn btn-primary w-full"
-                style={{ background: "#fff", color: "#1a1a1a", borderColor: "#dadce0" }}
+                className="btn btn-secondary w-full"
               >
                 使用 Google 登录
               </button>

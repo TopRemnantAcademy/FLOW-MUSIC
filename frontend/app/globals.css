@@ -22,6 +22,9 @@
 
   --ring: oklch(0.20 0 0);
   --danger: oklch(0.58 0.20 25);
+  /* 强调色（品牌黑白体系下即实心墨色，用于 active/focus/CTA）；--line 为分隔线，等同 --border */
+  --accent: oklch(0.20 0 0);
+  --line: oklch(0.90 0 0);
   --shadow: 0 1px 2px oklch(0 0 0 / 0.05), 0 10px 30px oklch(0 0 0 / 0.06);
 
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
@@ -47,6 +50,9 @@
     --btn-solid-fg: oklch(0.16 0 0);
 
     --ring: oklch(0.96 0 0);
+    --accent: oklch(0.96 0 0);
+    --line: oklch(0.30 0 0);
+    --danger: oklch(0.72 0.17 25);
     --shadow: 0 1px 2px oklch(0 0 0 / 0.4), 0 10px 30px oklch(0 0 0 / 0.45);
 
     color-scheme: dark;
@@ -69,6 +75,9 @@
   --btn-solid-fg: oklch(0.16 0 0);
 
   --ring: oklch(0.96 0 0);
+  --accent: oklch(0.96 0 0);
+  --line: oklch(0.30 0 0);
+  --danger: oklch(0.72 0.17 25);
   --shadow: 0 1px 2px oklch(0 0 0 / 0.4), 0 10px 30px oklch(0 0 0 / 0.45);
 
   color-scheme: dark;
@@ -90,6 +99,9 @@
   --btn-solid-fg: oklch(0.98 0 0);
 
   --ring: oklch(0.20 0 0);
+  --accent: oklch(0.20 0 0);
+  --line: oklch(0.90 0 0);
+  --danger: oklch(0.58 0.20 25);
   --shadow: 0 1px 2px oklch(0 0 0 / 0.05), 0 10px 30px oklch(0 0 0 / 0.06);
 
   color-scheme: light;
@@ -252,6 +264,23 @@ textarea.input { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; 
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
+}
+
+/* 分隔线（如登录表单 "或"）：两侧细线夹文字，颜色随主题 */
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.25rem 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.divider::before,
+.divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
 }
 
 /* 选中态小标签（风格 chip / 排序 pill） */
