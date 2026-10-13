@@ -507,6 +507,11 @@ export default function LibraryPage() {
                   >
                     局部改写
                   </button>
+                  {/* GAP-012：歌词编辑器独立页（段落结构 / 改词后重排时轴 / LRC 导入导出）。
+                      做成导航而非弹层：逐行对时点是长任务，卡片里塞不下；且独立 URL 可刷新。 */}
+                  <Link href={`/songs/${s.id}/lyrics`} className="btn btn-secondary btn-sm">
+                    编辑歌词
+                  </Link>
                 </>
               )}
             </div>

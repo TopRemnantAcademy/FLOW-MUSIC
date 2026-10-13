@@ -59,6 +59,36 @@ export type SongView = {
   moderation_note?: string | null;
 };
 
+// ── GAP-012 歌词编辑 / LRC 导出导入 ──
+// 行级时间轴：**不再**让前端自己解析 lyrics_sync。编辑是双向的，解析口径必须与后端
+// 导出（.lrc）逐行一致，否则会出现「屏幕上看到的行」≠「导出的行」。
+export type LyricLine = {
+  start: number;        // 行起始（毫秒）
+  end?: number | null;  // 行结束（毫秒）；null = 未知（后端会用曲长/下一行兜底）
+  text: string;
+  section: string;      // 段落：verse | chorus | bridge | intro | outro | pre-chorus | instrumental
+};
+export type LyricsDoc = {
+  song_id: number;
+  title: string;
+  duration?: number | null;   // 秒（与 SongView.duration 同单位）
+  lyric: string;
+  lines: LyricLine[];
+  has_timeline: boolean;      // false = 只能做纯文本编辑（无逐字数据）
+  word_count: number;         // 逐字时点数量（只读展示）
+  is_owner: boolean;
+  can_edit: boolean;
+};
+export type LrcImportResult = {
+  song_id: number;
+  parsed_lines: number;
+  imported_lines: LyricLine[];
+  warnings: string[];
+  lyric: string;
+  saved: boolean;
+  notes: string[];
+};
+
 // ── GAP-011 库组织 ──
 // 回收站条目：SongView + 删除时刻/到期时刻/剩余天数（days_left 由后端算，前端只显示）
 export type TrashItem = SongView & {
@@ -553,6 +583,44 @@ export const api = {
   generate: (body: Record<string, unknown>) =>
     request("/api/songs/generate", { method: "POST", body: JSON.stringify(body) }),
   getSong: (id: number) => request<SongView>(`/api/songs/${id}`),
+  // ── GAP-012 歌词编辑 / LRC ──
+  // lyricsDoc   = 编辑器数据源（后端已归一的行级时间轴 + 段落分组；不要在前端重复解析）
+  // lyricsLrcUrl= .lrc 下载直链（交给浏览器/第三方播放器，不经过 fetch：需要服务端
+  //               Content-Disposition 的文件名，用 blob 反而会丢掉它）
+  // lyricsLrc   = 取 .lrc 文本（编辑器里「预览导出结果」用）
+  lyricsDoc: (id: number) => request<LyricsDoc>(`/api/songs/${id}/lyrics/doc`),
+  lyricsLrcUrl: (id: number, offsetMs?: number) => {
+    const qs = offsetMs ? `?offset_ms=${offsetMs}` : "";
+    return `${API_BASE}/api/songs/${id}/lyrics.lrc${qs}`;
+  },
+  lyricsLrc: async (id: number, offsetMs?: number): Promise<string> => {
+    const qs = offsetMs ? `?offset_ms=${offsetMs}` : "";
+    const res = await fetch(`${API_BASE}/api/songs/${id}/lyrics.lrc${qs}`, {
+      credentials: "include",
+    });
+    if (!res.ok) throw new ApiError("导出 LRC 失败", res.status);
+    return res.text();
+  },
+  // 保存：lines 非空 = 按行保存（尊重用户时点）；只给 lyric 时由 realign 决定
+  // 「保时间轴重排」还是「丢弃时间轴」。
+  saveLyrics: (
+    id: number,
+    body: { lyric: string; lines?: LyricLine[] | null; realign?: boolean }
+  ) =>
+    request<LyricsDoc>(`/api/songs/${id}/lyrics`, {
+      method: "PUT",
+      body: JSON.stringify({ realign: true, ...body }),
+    }),
+  // 导入 LRC：save=false 可先预览解析结果再决定是否落库
+  importLrc: (id: number, lrc: string, save = true) =>
+    request<LrcImportResult>(`/api/songs/${id}/lyrics/import`, {
+      method: "POST",
+      body: JSON.stringify({ lrc, save }),
+    }),
+  // 改词后一键重排时轴（不要求先把编辑框内容提交上来）
+  realignLyrics: (id: number) =>
+    request<LyricsDoc>(`/api/songs/${id}/lyrics/realign`, { method: "POST" }),
+
   listSongs: (limit?: number, offset?: number) => {
     const qs =
       limit != null || offset != null

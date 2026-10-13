@@ -12,7 +12,7 @@ from app.audit import log_admin_access
 from app.config import settings
 from app.db import init_db
 from app.mureka_health import run_startup_preflight
-from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share
+from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share, lyrics
 from app.routers.auth import _resolve_admin_role
 
 log = logging.getLogger("music-api")
@@ -189,6 +189,10 @@ app.include_router(library.router)
 app.include_router(search.router)
 # 无状态分享链接（GAP-013）：HMAC 签名 token，匿名可访问
 app.include_router(share.router)
+# 歌词编辑（GAP-012）：LRC 导出/导入 + 行级时间轴编辑 + 改词后重对齐。
+# 与 songs.router 同前缀 /api/songs，只是把「歌词」这一独立闭环拆出来，
+# 免得本已 2300 行的 songs.py 继续膨胀（见 routers/lyrics.py 模块注释）。
+app.include_router(lyrics.router)
 
 
 @app.get("/health")

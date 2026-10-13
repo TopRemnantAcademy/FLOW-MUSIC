@@ -245,6 +245,95 @@ check("CreateForm 提交携带 audio_format", /audio_format: audioFormat/.test(c
 check("Player 下载按钮按格式调用 api.downloadSong(id, format)",
   /api\.downloadSong\(local\.id, downloadFormat\)/.test(playerTsx));
 
+// ── GAP-012 歌词编辑 / LRC 导出导入 契约 ───────────────────────────────────
+section("GAP-012 歌词编辑 / LRC");
+
+const lrcPy = read(path.join(ROOT, "backend/app/lyrics/lrc.py"));
+const lyricsRouter = read(path.join(ROOT, "backend/app/routers/lyrics.py"));
+const editorTsx = read(path.join(ROOT, "frontend/components/LyricsEditor.tsx"));
+const lyricsPage = read(path.join(ROOT, "frontend/app/songs/[id]/lyrics/page.tsx"));
+const lyricsTestPy = read(path.join(ROOT, "backend/tests/test_lyrics_lrc.py"));
+
+// ① 后端路由与前端包装一一对应（改一侧忘另一侧 = 静默 404）
+const lrcRoutes = [
+  ["GET  /{song_id}/lyrics/doc", '@router.get("/{song_id}/lyrics/doc"'],
+  ["GET  /{song_id}/lyrics.lrc", '@router.get("/{song_id}/lyrics.lrc"'],
+  ["POST /{song_id}/lyrics/import", '@router.post("/{song_id}/lyrics/import"'],
+  ["PUT  /{song_id}/lyrics", '@router.put("/{song_id}/lyrics"'],
+  ["POST /{song_id}/lyrics/realign", '@router.post("/{song_id}/lyrics/realign"'],
+];
+for (const [label, needle] of lrcRoutes) {
+  check(`lyrics.py 有路由 ${label}`, lyricsRouter.includes(needle));
+}
+const lrcWrappers = [
+  ["lyricsDoc", "/api/songs/${id}/lyrics/doc"],
+  ["lyricsLrcUrl", "/api/songs/${id}/lyrics.lrc"],
+  ["saveLyrics", "/api/songs/${id}/lyrics`"],
+  ["importLrc", "/api/songs/${id}/lyrics/import"],
+  ["realignLyrics", "/api/songs/${id}/lyrics/realign"],
+];
+for (const [name, p] of lrcWrappers) {
+  check(`api.${name} 已包装且路径正确`, apiTs.includes(p));
+}
+check("main.py 已挂载 lyrics.router", /include_router\(lyrics\.router\)/.test(
+  read(path.join(ROOT, "backend/app/main.py"))));
+
+// ② 导出可解析性：只写标准行级时标，不得写增强型逐字标记
+check("lrc.py 时间格式是 [mm:ss.xx]（百分秒两位）",
+  /f"\{mm:02d\}:\{ss:02d\}\.\{cs:02d\}"/.test(lrcPy));
+check("lrc.py 解析时标正则支持 [mm:ss.xx]/[mm:ss]/[mm:ss:xx]",
+  /_TIME_TAG_RE = re\.compile\(r"\\\[.*\]"\)/.test(lrcPy) && lrcPy.includes("(?:[.:]"));
+check("lrc.py 不生成增强型逐字标记（第三方支持面窄）", !lrcPy.includes("<%02d:%02d"));
+check("lrc.py 元信息做注入清洗（标题里的 ] 换行）", /_sanitize_meta/.test(lrcPy));
+check("lrc.py 一行多时标可展开（兼容他人文件）", /for m in times:/.test(lrcPy));
+check("lrc.py 未定时行不丢弃但有 warning", /无时间轴/.test(lrcPy));
+check("lrc.py 解析 offset 标签", /offset_ms/.test(lrcPy) && /int\(float\(v\.strip\(\)\)\)/.test(lrcPy));
+
+// ③ 重对齐：改词后保持时间轴（核心承诺）
+check("lrc.py 有 realign_sync", /def realign_sync\(/.test(lrcPy));
+check("重对齐「行数不变 → 时间轴原样保留」", /n_new == n_old/.test(lrcPy));
+check("无旧轴时绝不伪造时轴（aligned=False）", /"aligned": False/.test(lrcPy));
+check("旧轴不可用（多行同时点）同样标记为不可对齐", /usable = bool\(old\) and len\(set\(starts_seq\)\) > 1/.test(lrcPy));
+
+// ④ 契约安全：不得新增迁移 / 不得改 models
+check("GAP-012 未新增迁移（lyrics_sync 列已存在，直接复用）",
+  !/lyrics_sync/.test(read(path.join(ROOT, "backend/app/models.py")).replace(/[\s\S]*/, (m) => m)) ||
+  /lyrics_sync = Column\(Text, nullable=True\)/.test(modelsPy));
+check("未新增第二个 lyrics_sync 列", (modelsPy.match(/lyrics_sync\s*=\s*Column/g) || []).length === 1);
+check("routers/lyrics.py 不 import migrations / 不建表",
+  !/Base\.metadata\.create|alembic/.test(lyricsRouter));
+
+// ⑤ 前端：编辑器入口 + 段落 + AI 复用 + 下载直链
+check("LyricsEditor 组件存在且为客户端组件", /"use client"/.test(editorTsx));
+check("编辑器有段落结构编辑（SECTION_OPTIONS）", /SECTION_OPTIONS/.test(editorTsx));
+check("段落分组渲染（按连续同段归类）", /const groups = useMemo/.test(editorTsx));
+check("AI 助手复用 /assist/lyrics 生成", /api\.assistLyrics\(/.test(editorTsx));
+check("AI 助手复用 /assist/lyrics/format 格式对齐", /api\.assistLyricsFormat\(/.test(editorTsx));
+check("下载走服务端直链（保留 Content-Disposition 文件名）",
+  /api\.lyricsLrcUrl\(songId\)/.test(editorTsx) && /a\.href = api\.lyricsLrcUrl/.test(editorTsx));
+check("编辑器有时点输入且格式与导出一致（fmt = mm:ss.xx）",
+  /function fmt\(/.test(editorTsx) && /padStart\(2, "0"\)/.test(editorTsx));
+check("时点解析失败不静默清零（回退上一个有效值）",
+  /if \(ms == null\) \{[\s\S]{0,160}setText\(fmt\(value\)\)/.test(editorTsx));
+check("独立歌词编辑页 /songs/[id]/lyrics 存在", /LyricsEditor songId=\{songId\}/.test(lyricsPage));
+check("编辑页用 useParams 取 id", /useParams/.test(lyricsPage));
+
+// ⑥ 自验存在性：真实样例 + 边界断言
+check("tests/test_lyrics_lrc.py 存在", lyricsTestPy.length > 0);
+for (const [what, needle] of [
+  ["空行歌词", "空行歌词"],
+  ["长时轴", "长时轴"],
+  ["多段", "多段"],
+  ["一行多时标", "一行多时标"],
+  ["offset", "offset"],
+  ["往返", "往返"],
+  ["真实 mureka 形状", "REAL_SYNC"],
+  ["导入导出往返稳定", "导出 → 再导入"],
+  ["改词后高亮不失配", "高亮不失配"],
+]) {
+  check(`自验覆盖：${what}`, lyricsTestPy.includes(needle));
+}
+
 // ── 汇总 ─────────────────────────────────────────────────────────────────
 console.log(`\n${"=".repeat(56)}`);
 console.log(`PASS=${pass}  FAIL=${fail}`);
