@@ -12,7 +12,7 @@ from app.audit import log_admin_access
 from app.config import settings
 from app.db import init_db
 from app.mureka_health import run_startup_preflight
-from app.routers import admin, auth, songs, flow, billing, plaza, library, search
+from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share
 from app.routers.auth import _resolve_admin_role
 
 log = logging.getLogger("music-api")
@@ -187,6 +187,8 @@ app.include_router(plaza.router)
 app.include_router(library.router)
 # 搜索/发现（GAP-014）：标签浏览 + 按标签筛选 + 相似推荐 + 时间窗趋势
 app.include_router(search.router)
+# 无状态分享链接（GAP-013）：HMAC 签名 token，匿名可访问
+app.include_router(share.router)
 
 
 @app.get("/health")

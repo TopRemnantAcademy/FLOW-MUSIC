@@ -6,13 +6,16 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:contract": "node tests/mureka-ui-contract.test.cjs && node tests/gap013-player.test.cjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "next": "^16.3.8",
     "qrcode.react": "^3.1.0",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "wavesurfer.js": "^7.12.12"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",

@@ -66,6 +66,9 @@ export default function Player({
   // 无损缺失时不列出对应选项，避免「选了才 409」。
   const [downloadFormat, setDownloadFormat] = useState<string>("mp3");
   const [publishing, setPublishing] = useState(false);
+  // GAP-013 分享链接：{url, expiresAt} 已生成 / "loading" 生成中 / "" 未生成
+  const [shareUrl, setShareUrl] = useState("");
+  const [sharing, setSharing] = useState(false);
   const [playing, setPlaying] = useState(false);
   // 需鉴权的试听端点（对象存储未配置时的回退）→ 取 blob 再播。
   // O4 优化：预览 blob 不再在挂载时 eagerly 拉取。列表页（广场/我的作品/首页）每个
@@ -266,6 +269,40 @@ export default function Player({
     }
   }
 
+  async function handleShare() {
+    if (!local.id) return;
+    setSharing(true);
+    setMsg("");
+    try {
+      const link = await api.createShareLink(local.id);
+      const abs =
+        typeof window !== "undefined" ? `${window.location.origin}${link.path}` : link.path;
+      setShareUrl(abs);
+      // 优先用系统分享面板（移动端体验最好），不可用时退回剪贴板。
+      const nav: any = typeof navigator !== "undefined" ? navigator : null;
+      if (nav?.share) {
+        try {
+          await nav.share({ title: local.title || "FLOW MUSIC", url: abs });
+          setMsg(`分享链接已生成（有效期至 ${new Date(link.expires_at * 1000).toLocaleDateString()}）`);
+          return;
+        } catch {
+          /* 用户取消系统面板 → 退回剪贴板 */
+        }
+      }
+      if (nav?.clipboard?.writeText) {
+        await nav.clipboard.writeText(abs);
+        setMsg(`链接已复制（有效期至 ${new Date(link.expires_at * 1000).toLocaleDateString()}）`);
+      } else {
+        setMsg("分享链接已生成，请手动复制");
+      }
+    } catch (e: any) {
+      if (e?.status === 400) setMsg("仅已公开发布的作品可生成分享链接");
+      else setMsg(e?.message || "生成分享链接失败");
+    } finally {
+      setSharing(false);
+    }
+  }
+
   async function handleDownload() {
     if (!local.id) return;
     setDownloading(true);
@@ -314,6 +351,10 @@ export default function Player({
   }
 
   const completed = local.status === "completed";
+  // GAP-013：分享链接**无状态**（HMAC 签名 token），后端不存记录。
+  // 只有「已公开发布 + 生成完成 + 非驳回」的作品能签票 —— 未公开作品的分享入口直接禁用，
+  // 而不是让用户点了才吃 400（与后端 create_share_link 的三道校验同形）。
+  const canShare = completed && !!local.is_public && local.moderation_status !== "rejected";
   const generating = !local.audio_url && !completed;
   // 已完成但无音频 = 试听片段生成失败（后端 fail-closed，不会回退完整链接）
   const audioMissing = completed && (!local.audio_url || previewFailed);
@@ -502,6 +543,22 @@ export default function Player({
             >
               {spawning === "remix" ? "混音中…" : "混音"}
             </button>
+            {/* GAP-013 分享：只在作品已公开发布时可用（未公开作品本就不该对外传播）。
+                禁用态给出原因，而不是静默隐藏 —— 用户会以为「功能没做」。 */}
+            <button
+              onClick={handleShare}
+              disabled={sharing || !canShare}
+              className="btn btn-secondary btn-sm"
+              title={
+                canShare
+                  ? "生成一条有有效期的分享链接（无需登录即可试听）"
+                  : !completed
+                  ? "作品生成完成后才能分享"
+                  : "先发布到广场才能分享"
+              }
+            >
+              {sharing ? "生成中…" : "分享链接"}
+            </button>
             {local.can_download && (
               <div className="flex items-center gap-1">
                 {/* GAP-010：多格式时给选择器；仅 mp3 时不必徒增控件 */}
@@ -534,6 +591,14 @@ export default function Player({
           </>
         )}
       </div>
+      {shareUrl && (
+        <p className="mt-1 break-all text-xs text-[var(--ink-soft)]">
+          分享链接：
+          <a href={shareUrl} target="_blank" rel="noreferrer" className="underline">
+            {shareUrl}
+          </a>
+        </p>
+      )}
       {msg && <p className="mt-1 text-xs text-[var(--ink-soft)]">{msg}</p>}
     </div>
   );

@@ -63,7 +63,11 @@ function ensureEl(): HTMLAudioElement {
   a.addEventListener("pause", () => patchStatus({ playing: false }));
   a.addEventListener("loadedmetadata", () => patchStatus({ duration: a.duration || 0 }));
   a.addEventListener("timeupdate", () => {
+    // AB 回绕要在「广播给订阅者之前」判定：先修正 currentTime，再让订阅者
+    // （进度条/波形/逐字歌词）看到修正后的值，否则会在回绕的那一帧闪一下区间外位置。
+    const looped = maybeWrapAb(a);
     time = a.currentTime;
+    if (looped) patchStatus({}); // 回绕不改 status 字段，但需要刷新进度订阅者
     for (const l of timeListeners) l();
   });
   a.addEventListener("ended", () => {
@@ -72,6 +76,31 @@ function ensureEl(): HTMLAudioElement {
   });
   el = a;
   return a;
+}
+
+// ── GAP-013 AB 回绕 ──────────────────────────────────────────────────────
+/**
+ * AB 区间由 playback.ts 持有状态，但回绕必须在**音频元素的 timeupdate 里**发生。
+ *
+ * 为什么用「注册回调」而不是让 audioBus 去 import playback：
+ *   audioBus 是零依赖的底层总线（它连 SongView 都不认识），playback 是业务状态层。
+ *   让它反过来依赖业务层会把两层缠死，而这个文件的注释里已经写明「两条独立订阅通道」
+ *   的分层意图。回调注册保持单向：playback → audioBus。
+ */
+let abLoop: { a: number; b: number } | null = null;
+
+/** 设置/清除 AB 回绕区间。传 null 即关闭。 */
+export function busSetAbLoop(loop: { a: number; b: number } | null) {
+  abLoop = loop;
+}
+
+/** 回绕判定：currentTime 越过 b → 跳回 a。返回是否真的跳了。 */
+function maybeWrapAb(a: HTMLAudioElement): boolean {
+  if (!abLoop || !a.duration) return false;
+  if (a.currentTime < abLoop.b) return false;
+  // 停在 b 之前的极小偏移，避免「恰好 == b 时 seek 后又立刻触发」的空转。
+  a.currentTime = abLoop.a;
+  return true;
 }
 
 function patchStatus(p: Partial<AudioStatus>) {

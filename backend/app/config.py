@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # JWT 声明加固（2026-09-13 审计，MED）：补 aud/iss 防令牌跨服务误用/伪造。
     jwt_issuer: str = "flow-music-platform"
     jwt_audience: str = "flow-music-platform"
+    # ── GAP-013 无状态分享链接签名密钥 ──
+    # 独立密钥的意义：轮换它只作废**已发出的分享链接**，不必把所有用户的登录态一起踢下线。
+    # 留空则回落 jwt_secret（routers/share.py:share_secret()），于是不配也能用。
+    # ⚠ 只从 env 读，绝不落 git（仓库 Public）。生成：python -c "import secrets; print(secrets.token_urlsafe(32))"
+    share_secret: str = ""
     # 允许的前端来源（逗号分隔）。默认覆盖三类开发/打包来源：
     #   · Web 前端（Next.js dev/prod：3000）
     #   · FLOW APP PWA 开发服务（4174）

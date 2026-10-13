@@ -110,6 +110,40 @@ export type BatchResult = {
 // 独立成类型而非散落 Record<string, unknown>：字段名写错时 tsc 当场报错，
 // 而不是等运行时被 pydantic 拒成 422（此前 extend_type 传了就会被拒，正是因为
 // 前端 `{}` 什么都指定不了、后端 SpawnReq 也不认这个字段）。
+// ── GAP-013 分享链接（无状态 HMAC token）──
+// 作者签发：POST /api/share/songs/{id} → {token, path, expires_at}
+// 匿名访问：GET  /api/share/songs/{token} → SharedSongView（精简视图，非完整 SongOut）
+export type ShareLink = {
+  token: string;
+  path: string;
+  expires_at: number; // unix 秒
+};
+
+/** 分享落地页的曲目视图。
+ *  刻意**不含** play_count / cost_cny / is_owner / lyric 等：那是登录态字段，
+ *  匿名分享页拿到只会平白多出信息面（后端已收口，此处类型也对齐）。 */
+/** 波形峰值响应（后端 ffmpeg 抽取，见 routers/share.py）。 */
+export type PeaksView = {
+  song_id: number;
+  buckets: number;
+  duration: number;
+  peaks: number[];
+};
+
+export type SharedSongView = {
+  song_id: number;
+  title: string;
+  cover_url?: string | null;
+  audio_url?: string | null;
+  duration?: number;
+  preview_seconds?: number | null;
+  can_play_full?: boolean;
+  can_download?: boolean;
+  license?: string;
+  moderation_status?: string;
+  expires_at: number;
+};
+
 export type SpawnParams = {
   prompt?: string;
   style?: string;
@@ -584,6 +618,20 @@ export const api = {
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },
+  // ── GAP-013 分享链接 ──
+  /** 作者为自己**已公开发布**的作品签发分享链接（需登录 + 所有权）。 */
+  createShareLink: (id: number, ttlSeconds?: number) =>
+    request<ShareLink>(`/api/share/songs/${id}`, {
+      method: "POST",
+      body: JSON.stringify(ttlSeconds ? { ttl_seconds: ttlSeconds } : {}),
+    }),
+  /** 解析分享 token（**匿名可调用**）。403=过期/篡改，404=未公开/未过审/已下架。 */
+  resolveShareLink: (token: string) =>
+    request<SharedSongView>(`/api/share/songs/${encodeURIComponent(token)}`),
+  /** 波形峰值。返回的是**相对路径**（Waveform 组件自己拼 API_BASE），
+   *  因为它被当作 <Waveform peaksUrl> 传入，由组件统一处理同源 fetch + CSP。 */
+  sharePeaksPath: (token: string, buckets?: number) =>
+    `/api/share/songs/${encodeURIComponent(token)}/peaks${buckets ? `?buckets=${buckets}` : ""}`,
   extendSong: (id: number, body: SpawnParams = {}) =>
     request(`/api/songs/${id}/extend`, { method: "POST", body: JSON.stringify(body) }),
   coverSong: (id: number, body: SpawnParams = {}) =>

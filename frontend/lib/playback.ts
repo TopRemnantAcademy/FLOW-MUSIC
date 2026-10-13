@@ -28,18 +28,50 @@ import type { PlaybackPrefs, PlaylistState, RepeatMode } from "./playlist";
 
 const PLAYLIST_KEY = "flow-music-playlist";
 const PREFS_KEY = "flow-music-prefs";
+const AB_KEY = "flow-music-ab";
+
+/**
+ * AB 重复区间（练唱 / 编曲比对）。
+ *
+ * 语义刻意做成「**相对当前曲目**的半成品状态机」：
+ *   · a == null            → 还没打 A 点
+ *   · a != null, b == null → 已打 A、等 B（此时不循环）
+ *   · a < b                → 循环区间 [a, b]
+ *   · a >= b               → 非法组合，一律**丢弃**（见 setAbB）而不是偷偷交换：
+ *     交换会让「我打了 A=30s，B=10s」变成循环 10~30s —— 用户以为区间是空操作，
+ *     实际听到的却是 20 秒在反复，这种「猜用户意图」比报错更坏。
+ */
+export interface AbLoop {
+  a: number;
+  b: number | null;
+}
+
+/** AB 区间的持久化形状校验（坏数据丢弃，与 isValidPlaylistState 同一策略）。 */
+function isValidAb(v: unknown): v is AbLoop {
+  if (!v || typeof v !== "object") return false;
+  const p = v as Partial<AbLoop>;
+  if (typeof p.a !== "number" || !Number.isFinite(p.a) || p.a < 0) return false;
+  if (p.b == null) return true;
+  return typeof p.b === "number" && Number.isFinite(p.b) && p.b > p.a;
+}
+
+/** AB 区间最短长度（秒）。太短的区间会退化成「电流声」，无音乐意义。 */
+export const AB_MIN_SPAN = 0.5;
 
 export interface PlaybackSnapshot {
   playlist: PlaylistState | null;
   prefs: PlaybackPrefs;
   /** 队列已切到下一首、等对应卡片挂载后自动起播（一次性的，消费后清零） */
   autostart: boolean;
+  /** GAP-013 AB 重复区间；null = 未启用 */
+  ab: AbLoop | null;
 }
 
 const EMPTY: PlaybackSnapshot = {
   playlist: null,
   prefs: DEFAULT_PREFS,
   autostart: false,
+  ab: null,
 };
 
 let snapshot: PlaybackSnapshot = EMPTY;
@@ -59,6 +91,9 @@ function commit(next: PlaybackSnapshot, persist: boolean) {
       if (next.playlist) window.localStorage.setItem(PLAYLIST_KEY, JSON.stringify(next.playlist));
       else window.localStorage.removeItem(PLAYLIST_KEY);
       window.localStorage.setItem(PREFS_KEY, JSON.stringify(next.prefs));
+      // AB 区间跨刷新保留：练唱时反复刷新页面不该丢掉刚打好的区间。
+      if (next.ab) window.localStorage.setItem(AB_KEY, JSON.stringify(next.ab));
+      else window.localStorage.removeItem(AB_KEY);
     } catch {
       /* 隐私模式 / 配额满：队列降级为内存态，不影响播放 */
     }
@@ -92,8 +127,24 @@ function hydrateOnce() {
     playlist = null;
     prefs = DEFAULT_PREFS;
   }
-  if (playlist || prefs.shuffle || prefs.repeat !== DEFAULT_PREFS.repeat) {
-    commit({ playlist, prefs, autostart: false }, false);
+  let ab: AbLoop | null = null;
+  try {
+    const rawAb = window.localStorage.getItem(AB_KEY);
+    if (rawAb) {
+      const parsed = JSON.parse(rawAb);
+      ab = isValidAb(parsed) ? parsed : null;
+      if (!ab) window.localStorage.removeItem(AB_KEY);
+    }
+  } catch {
+    ab = null;
+  }
+  if (
+    playlist ||
+    ab ||
+    prefs.shuffle ||
+    prefs.repeat !== DEFAULT_PREFS.repeat
+  ) {
+    commit({ playlist, prefs, autostart: false, ab }, false);
   }
 }
 
@@ -205,7 +256,45 @@ export function cycleRepeat(): RepeatMode {
 }
 
 export function clearPlaylist() {
-  commit({ playlist: null, prefs: snapshot.prefs, autostart: false }, true);
+  commit({ playlist: null, prefs: snapshot.prefs, autostart: false, ab: null }, true);
+}
+
+// ── GAP-013 AB 重复 ──────────────────────────────────────────────────────
+/**
+ * 打 A 点（区间起点）。
+ * 重复按 A 的行为：**重置区间**（a=新值, b=null）。
+ * 为什么不「第二次按就等于按 B」：那样按钮的含义会随内部状态漂移，
+ * 用户在 AB 关掉后按 A 会莫名其妙建出一个区间。A 就是 A，B 就是 B。
+ */
+export function setAbA(seconds: number) {
+  const a = Math.max(0, seconds);
+  commit({ ...snapshot, ab: { a, b: null } }, true);
+}
+
+/**
+ * 打 B 点（区间终点）。未打 A 时无效（返回 false，调用方据此提示「请先打 A 点」）。
+ * B <= A + AB_MIN_SPAN → 丢弃区间并返回 false：不静默交换、不建零长区间。
+ */
+export function setAbB(seconds: number): boolean {
+  const ab = snapshot.ab;
+  if (!ab) return false;
+  const b = Math.max(0, seconds);
+  if (b <= ab.a + AB_MIN_SPAN) return false;
+  commit({ ...snapshot, ab: { a: ab.a, b } }, true);
+  return true;
+}
+
+/** 清除整个 AB 区间（含只打了 A 点的半成品）。 */
+export function clearAb() {
+  if (!snapshot.ab) return;
+  commit({ ...snapshot, ab: null }, true);
+}
+
+/** 区间是否已成型（A、B 都有且 B > A）。仅成型后才需要播放器做回绕。 */
+export function activeAbLoop(ab: AbLoop | null): { a: number; b: number } | null {
+  if (!ab || ab.b == null) return null;
+  if (ab.b <= ab.a + AB_MIN_SPAN) return null;
+  return { a: ab.a, b: ab.b };
 }
 
 /** 组件内订阅入口。字段变化才换引用，避免每帧重渲染。 */
