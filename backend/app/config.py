@@ -160,6 +160,9 @@ class Settings(BaseSettings):
     download_rate_limit_per_minute: int = 20  # 单用户每分钟完整下载上限（防带宽/对象存储成本滥用）
     # GAP-028 批量导出限流：一次导出 = N 首完整音频（下载 + 打包），放大倍数远高于单曲下载
     export_rate_limit_per_minute: int = 3  # 单用户每分钟批量导出上限（429）
+    # GAP-022 开放平台：token 创建 / webhook 注册都是**低频、有副作用**的动作
+    # （注册 webhook 会让我们对外发请求 —— 被滥用就是 SSRF 探测跳板）。
+    developer_rate_limit_per_minute: int = 10  # 单用户每分钟开发者配置写入上限（429）
     # GAP-028 打包护栏（防滥用 CWE-400）：曲目数上限是**硬 400**（见 routers/export.py），
     # 这两项是体积闸门 —— 单曲超限的跳过并在 zip 内 export-notes.txt 如实汇报，不整批失败。
     export_max_total_mb: int = 512  # 单次导出 zip 的原始音频总体积上限（MB）

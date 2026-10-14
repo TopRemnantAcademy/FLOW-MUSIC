@@ -186,3 +186,19 @@ def rate_limit_notification_test(user_key: str) -> None:
         settings.notifications_test_rate_limit_per_minute,
         "自检请求过于频繁，请稍后再试",
     )
+
+
+def rate_limit_developer(user_key: str) -> None:
+    """GAP-022 开发者配置写入限流（token 创建 / webhook 注册）。
+
+    为什么需要：注册 webhook 会让我们**主动向外部地址发请求**。
+    不限流的话，一个账号就能把本服务当 SSRF 探测跳板 ——
+    每次注册一个 URL，再等一次投递，就能从"请求有没有发出去/多久超时"里
+    读出目标内网服务的存活情况（即使返回 400 被我们挡了，时序本身也是信息）。
+    """
+    _sliding_window(
+        f"developer:{user_key}",
+        60.0,
+        settings.developer_rate_limit_per_minute,
+        "开发者配置操作过于频繁，请稍后再试",
+    )

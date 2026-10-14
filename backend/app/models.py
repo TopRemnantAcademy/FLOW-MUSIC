@@ -636,3 +636,111 @@ class FeatureFlag(Base):
     min_tier = Column(String(32), nullable=False, default="", server_default="")
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GAP-022 开放平台：开发者凭证（DeveloperToken） + 出站 Webhook
+#
+# 设计取舍（结论先行）：
+#   · **只增不改**：三张新表，不触碰 users/songs 等既有列。开放平台是**增量能力**，
+#     不是既有认证的替代品 —— 既有 JWT 路径（auth.py）语义完全不变。
+#   · token 只存 sha256 摘要：与 GAP-002 的邮箱验证/重置 token 同一策略。明文仅
+#     在**创建响应里出现一次**；DB 泄露换不出可用凭证（存明文 = 一次库泄露 = 全量接管）。
+#   · webhook 签名密钥（secret）与投递凭据是**两件事**：secret 必须可读回（要用来
+#     算 HMAC 签名），所以明文存储 —— 它只用于**出站**请求签名，攻击者拿到它也只能
+#     伪造"来自平台"的签名，无法借此登录任何账号。用官方密钥（JWT/管理员）签名则相反，
+#     那是把登录凭据交给第三方。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class DeveloperToken(Base):
+    """开发者 API 凭证：scope 限定 + 可吊销 + 可过期。
+
+    与登录 JWT 的关键差异（也是它必须独立成表的理由）：
+      · JWT 寿命由 env 一把决定，无法单独吊销某一枚 —— 开发者凭证必须能**即时吊销**
+        （泄露后等 24h 自然过期不是"能吊销"）。
+      · 开发者凭证要落审计（何时创建/何时最后一次使用），JWT 是无状态的，无处可落。
+      · scope 是**声明的白名单**（如 `songs:generate`），不是 JWT 那种"有 scope 即降级"
+        的全有全无判定。
+
+    `token_hint` = 明文 token 的 **sha256 前 8 位**（刻意不是明文前 8 位）：
+    列表页要能让开发者认出"这是在 CI 里用的那枚"，但明文前缀会把 token 熵泄露给
+    任何能看到列表的人（XSS / 截图 / 后台运维）。哈希前缀同样可辨认，且不可逆。
+    """
+
+    __tablename__ = "developer_tokens"
+    __table_args__ = (
+        # 单列唯一索引：lookup 走 `WHERE token_hash = ?`，必须是索引（每次 API 调用都查）。
+        Index("ix_developer_tokens_token_hash", "token_hash", unique=True),
+        # 列表按用户过滤 + 创建时间倒序：复合索引让「我的 token 列表」免一次排序。
+        Index("ix_developer_tokens_user_created", "user_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(64), nullable=False, default="", server_default="")  # 人可读备注（CI/本地脚本）
+    token_hash = Column(String(64), nullable=False)  # sha256 十六进制摘要（64 字符）
+    token_hint = Column(String(8), nullable=False, default="", server_default="")  # 摘要前 8 位
+    scopes = Column(Text, nullable=False, default="", server_default="")  # 逗号分隔白名单
+    revoked = Column(Boolean, nullable=False, default=False, server_default=false())
+    # NULL = 永不过期（开发者自行决定；吊销仍随时可用）。与 revoked 拆成两个字段：
+    # 「已过期」与「已吊销」是不同事实 —— 前者是时间到了，后者是人为动作，
+    # 合并成一个状态列会让审计追不出"谁在什么时候掐掉了它"。
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)  # 最后成功认证时刻（排查僵尸 token）
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class WebhookEndpoint(Base):
+    """出站 Webhook 订阅端点。
+
+    ⚠ `url` 在**注册时**做 SSRF 校验（拒绝内网/回环/链路本地/`file://`），
+    但校验通过 ≠ 以后一直安全：DNS 可以在注册后改指向 169.254.169.254。
+    因此**投递时再校验一次**（见 app/webhooks.py）。注册闸门只是把绝大多数
+    恶意目标挡在门外，投递闸门才是真正的防线（DNS-rebinding / TOCTOU）。
+    """
+
+    __tablename__ = "webhook_endpoints"
+    __table_args__ = (
+        # 同一用户对同一 URL 不重复注册（重复注册只会造成同一事件投递两次）。
+        # ⚠ 不含 secret/scopes：改了 scopes 应更新既有行而不是新建一条。
+        UniqueConstraint("user_id", "url", name="uq_webhook_endpoints_user_url"),
+        Index("ix_webhook_endpoints_user_created", "user_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    url = Column(String(512), nullable=False)
+    secret = Column(String(64), nullable=False)  # HMAC-SHA256 签名密钥（明文：出站签名需回读）
+    events = Column(Text, nullable=False, default="", server_default="")  # 逗号分隔事件白名单（""=全部）
+    active = Column(Boolean, nullable=False, default=True, server_default=true())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class WebhookDelivery(Base):
+    """Webhook 投递日志：成败落库 + 可重放。
+
+    为什么落库而不是只打日志：webhook 的失败**必须可观测**。对方服务挂了三天，
+    开发者要能查到"哪些事件没送到、最后一次错在哪" —— 日志会滚掉，表不会。
+    这也是「失败重试」能实现的前提：重试对象是**入库的投递记录**，不是内存里的闭包。
+
+    `attempts` 记的是累计尝试次数（含首次）；`delivered_at` 非空即终态成功，
+    之后不再重试（幂等靠对方按 `X-Flow-Delivery` 去重，不由平台担保）。
+    """
+
+    __tablename__ = "webhook_deliveries"
+    __table_args__ = (
+        # 待重试扫描：`WHERE delivered_at IS NULL ORDER BY created_at`。
+        Index("ix_webhook_deliveries_status", "delivered_at", "created_at"),
+        Index("ix_webhook_deliveries_endpoint", "endpoint_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    endpoint_id = Column(Integer, ForeignKey("webhook_endpoints.id"), nullable=False, index=True)
+    event = Column(String(64), nullable=False)
+    payload = Column(Text, nullable=False, default="", server_default="")  # JSON 原文（重试要发同一份）
+    attempts = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    status_code = Column(Integer, nullable=True)  # 最后一次 HTTP 状态码（网络失败为 NULL）
+    error = Column(String(500), nullable=False, default="", server_default="")  # 最后一次失败原因
+    delivered_at = Column(DateTime(timezone=True), nullable=True)  # 非空 = 成功终态
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

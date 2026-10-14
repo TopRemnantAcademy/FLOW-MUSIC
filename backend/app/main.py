@@ -12,7 +12,7 @@ from app.audit import log_admin_access
 from app.config import settings
 from app.db import init_db
 from app.mureka_health import run_startup_preflight
-from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share, lyrics, export, release, users, analytics_dashboard, notifications
+from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share, lyrics, export, release, users, analytics_dashboard, notifications, developer
 from app.routers.auth import _resolve_admin_role
 
 log = logging.getLogger("music-api")
@@ -209,6 +209,9 @@ app.include_router(analytics_dashboard.router)
 # 通知通道（GAP-021）：Web Push 订阅登记 + 通道自检 + 模板化发送。
 # 前缀 /api/notifications 与其它路由不重叠；无通配路径参数，故注册顺序无所谓。
 app.include_router(notifications.router)
+# 开放平台（GAP-022）：开发者凭证 + Webhook 订阅。前缀 /api/developer 与既有
+# /api/* 均不重叠，注册在最后即当前缀为独立命名空间，不参与任何通配匹配。
+app.include_router(developer.router)
 
 
 @app.get("/health")

@@ -7,6 +7,7 @@
 
 import asyncio
 import datetime
+import json
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
@@ -583,6 +584,90 @@ def _make_preview(remote_url: str, song_id: int) -> str:
         return ""
 
 
+def _webhook_event_for(song: Song) -> str:
+    """歌曲状态 → 事件名。目前只有两个终态事件。"""
+    return "song.completed" if song.status == "completed" else "song.failed"
+
+
+def _enqueue_webhook_deliveries(song: Song, db: Session) -> None:
+    """把「歌曲进入终态」转成投递记录并异步入队。
+
+    [为什么先落库再发] 重试对象必须是**入库的投递记录**（见 models.WebhookDelivery
+    注释）：直接在线程里闭包住 payload 重试，进程一重启就全丢了；而且开发者查
+    「哪些事件没送到」时无处可查。
+    """
+    user_id = song.user_id
+    if not user_id:
+        return
+    from app.models import WebhookDelivery, WebhookEndpoint
+
+    endpoints = (
+        db.query(WebhookEndpoint)
+        .filter(WebhookEndpoint.user_id == user_id, WebhookEndpoint.active.is_(True))
+        .all()
+    )
+    if not endpoints:
+        return
+    event = _webhook_event_for(song)
+    payload = {
+        "event": event,
+        "song_id": song.id,
+        "status": song.status,
+        "title": song.title or "",
+        "moderation_status": song.moderation_status or "pending",
+    }
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True, default=str)
+    queued: list[tuple[int, int]] = []
+    for ep in endpoints:
+        subscribed = [s.strip() for s in (ep.events or "").split(",") if s.strip()]
+        if subscribed and event not in subscribed:
+            continue
+        row = WebhookDelivery(endpoint_id=ep.id, event=event, payload=body)
+        db.add(row)
+        db.flush()  # 拿 id（投递头 X-Flow-Delivery 要用）
+        queued.append((row.id, ep.id))
+    db.commit()
+    for delivery_id, endpoint_id in queued:
+        _run_webhook_delivery_async(delivery_id, endpoint_id)
+
+
+def _webhook_delivery_sync(delivery_id: int, endpoint_id: int) -> None:
+    """线程池里执行的实际投递（自带 DB 会话 —— 不能复用后台任务的 session）。"""
+    from app.developer.delivery import deliver
+    from app.models import WebhookDelivery, WebhookEndpoint
+
+    s = SessionLocal()
+    try:
+        delivery = s.get(WebhookDelivery, delivery_id)
+        endpoint = s.get(WebhookEndpoint, endpoint_id)
+        if delivery is None or endpoint is None or delivery.delivered_at is not None:
+            return
+        deliver(endpoint, delivery.event, json.loads(delivery.payload or "{}"), db=s, delivery=delivery)
+    except Exception:  # 投递是增强项，绝不能冒泡打挂后台任务
+        log.exception("[webhook] 投递失败 delivery_id=%s", delivery_id)
+    finally:
+        s.close()
+
+
+def _run_webhook_delivery_async(delivery_id: int, endpoint_id: int) -> None:
+    """把阻塞投递丢进线程池，不阻塞 event loop。
+
+    ⚠ 用 `run_in_threadpool`（anyio）而非 `asyncio.create_task`：投递内部是
+    httpx 同步客户端 + time.sleep 退避，纯阻塞代码塞进 event loop 会把整个
+    worker 停住 15 秒 —— 与 [D32] 后处理下放线程池同一条理由。
+    """
+    async def _runner() -> None:
+        await run_in_threadpool(_webhook_delivery_sync, delivery_id, endpoint_id)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # 无事件循环（同步直调，如单测）→ 就地执行，语义等价且可断言。
+        _webhook_delivery_sync(delivery_id, endpoint_id)
+        return
+    loop.create_task(_runner())
+
+
 async def _finalize_song(song: Song, db: Session, result) -> None:
     """生成完成后的**统一收尾**：后处理 → 试听片段 → 音频机审 → 自动过审 → 拦截提示。
 
@@ -650,6 +735,15 @@ async def _finalize_song(song: Song, db: Session, result) -> None:
             await _mirror_to_cdn_for(song, db)
     except Exception as e:  # CDN 是增强项：失败只降级为「仍用上游链接」
         log.warning("歌曲 %s CDN 回源失败（保持上游链接）: %s", getattr(song, "id", "?"), e)
+    # GAP-022：生成完成 → 投递 webhook（与 CDN/Tag 同理，放在收起尾里让所有生成路径继承）。
+    # ⚠ 同步投递会带着重试退避（最长 ~15s）阻塞后台任务，故**先落库、再在线程池里发**：
+    #   · 先在这里把事件行写进 DB（幂等前提：即使进程随后被杀，事件也没丢）；
+    #   · 真正发请求丢到线程池，不占 event loop（投递是阻塞 IO + sleep）。
+    # 失败只降级为日志：webhook 是增强项，绝不能把「生成成功」变成「生成失败」。
+    try:
+        _enqueue_webhook_deliveries(song, db)
+    except Exception as e:
+        log.warning("歌曲 %s webhook 排队失败: %s", getattr(song, "id", "?"), e)
 
 
 async def _process_song(song_id: int):
