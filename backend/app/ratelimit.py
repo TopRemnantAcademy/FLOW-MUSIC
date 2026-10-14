@@ -162,3 +162,27 @@ def rate_limit_export(user_key: str) -> None:
         settings.export_rate_limit_per_minute,
         "导出请求过于频繁，请稍后再试",
     )
+
+
+def rate_limit_notification_subscribe(user_key: str) -> None:
+    """GAP-021 订阅写入限流。订阅文件是**整读整写**的（见 notification_store），
+    高频写入会把 O(n) 的读改写放大成放大面；同时它也是"任意 endpoint 写入"面，
+    需要防脚本刷。"""
+    _sliding_window(
+        f"notif-sub:{user_key}",
+        60.0,
+        settings.notifications_subscribe_rate_limit_per_minute,
+        "订阅操作过于频繁，请稍后再试",
+    )
+
+
+def rate_limit_notification_test(user_key: str) -> None:
+    """GAP-021 自检限流。每次自检会**真的发信 + 发推**：邮件走 SMTP 配额，
+    推送会打到第三方网关（FCM/Mozilla），无限流即可被用来刷爆发信域名信誉
+    （后果是正常验证邮件也被判垃圾），属于必须有的护栏。"""
+    _sliding_window(
+        f"notif-test:{user_key}",
+        60.0,
+        settings.notifications_test_rate_limit_per_minute,
+        "自检请求过于频繁，请稍后再试",
+    )

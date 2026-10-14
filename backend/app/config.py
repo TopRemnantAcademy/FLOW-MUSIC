@@ -453,6 +453,38 @@ class Settings(BaseSettings):
     auth_max_failed_logins: int = 5
     auth_lockout_minutes: int = 15
 
+    # ================= GAP-021 通知通道（邮件 + Web Push） =================
+    # 邮件**复用**上面的 SMTP_* 一组变量（GAP-002 已落地），此处刻意不新造
+    # SMTP2_* / NOTIFY_MAIL_* 一套平行配置 —— 两套配置必然漂移，
+    # 且运维要维护两份凭证。通知邮件走的正是 app/services/email.py:send_email()。
+    #
+    # Web Push（VAPID，RFC 8292）：
+    #   `VAPID_PRIVATE_KEY` = 服务端私钥（PEM 或单行 base64url 的 DER 均可，见下）。
+    #   `VAPID_PUBLIC_KEY`  = 交给浏览器 pushManager.subscribe() 的应用服务器公钥。
+    #   `VAPID_SUBJECT`     = 联系地址，**必须是 mailto: 或 https://**（RFC 8292 §2.1），
+    #                         推送网关（FCM/Mozilla autopush）会据此在滥用时联系站长。
+    # 三者缺一 = 未配置 → 通知通道优雅降级（登记待推送 + 返回 202），
+    # 而不是抛 500，也不是假装"推送成功"。
+    # ⚠ 私钥绝不落 git（仓库 public）。生成方式见 backend/.env.example 的 GAP-021 段
+    #   （一段可直接跑的 python -c；PEM 与单行 base64url DER 两种形态都吃）。
+    vapid_private_key: str = ""
+    vapid_public_key: str = ""
+    vapid_subject: str = "mailto:ops@flow-music.local"
+    # 推送 TTL（秒）。0 = 立即丢弃（设备离线即丢），给 24h 让离线设备上线后仍能收到。
+    web_push_ttl_seconds: int = 86400
+    # 单个用户最多保留的订阅端点。浏览器每次 subscribe() 都可能产出新端点（同一设备
+    # 也可能因清缓存而换端点），不设上限则「同一人无限写」——每端点在推送时都是一次
+    # 外网请求，等于给攻击者一个放大面。超限时逐出最旧的（见 notification_store.save）。
+    web_push_max_subscriptions_per_user: int = 10
+    # 通知端点限流（次/分钟）。测试推送会真的发信/发推，无限流即可被用来刷爆配额。
+    notifications_test_rate_limit_per_minute: int = 5
+    notifications_subscribe_rate_limit_per_minute: int = 20
+    # Web Push 订阅存储路径（追加式 JSONL，**不建表 / 不加迁移**，理由见
+    # app/services/notification_store.py 模块头）。留空 = 订阅端点整体关闭
+    # （返回 503 + 明确原因，而不是假装存下了）。生产务必指向**持久卷**：
+    # 容器内 /tmp 会随重启清空，届时用户会发现"订阅过但收不到"。
+    notification_store_path: str = "/tmp/flow_notifications/subscriptions.jsonl"
+
     # TOTP window: ±1 스텝(=±30s). 시계 드리프트는 허용하되 "±1분"처럼 과장하지 않는다.
     mfa_totp_valid_window: int = 1
 
