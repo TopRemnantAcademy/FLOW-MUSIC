@@ -3,7 +3,7 @@
 ## 放什么
 
 - `checks/`：校验脚本 —— `check_ascii.sh` / `verify_hashes.sh` / `check_ro.sh`
-  / `qc_file_check.py`(#60 交付件) / `mix_checks.py`(#58 混音)
+  / `qc_file_check.py`(#60 交付件) / `mix_checks.py`(#58 混音) / `g4_checklist.py`(#61)
 - `midi/`：编曲 MIDI 生成工具包（#52/#53/#54），纯 stdlib，详见 `midi/README.md`
 - `arrangement/`：编曲前规格校验器（#48）—— 只校验规格 JSON，不生成 MIDI；纯 stdlib
 - `render/`：输出格式工具包（#59）—— master WAV / 分轨 stem / 哈希 manifest；纯 stdlib
