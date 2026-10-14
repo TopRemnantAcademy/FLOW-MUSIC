@@ -12,6 +12,12 @@
 - 声乐源 WAV → `05_vocals/`
 - 门判定记录 → `08_qc/`
 
+## 工具
+
+- `tools/render/`（#59）：`masters/*_manifest.txt` 由
+  `python -m music_rebuild_project.tools.render.cli manifest` 生成；
+  stem 时长一致性（G4-9）由 `check-stems` 校验。
+
 ## 只读规则
 
 工程与 stem 可迭代（L1）。**过 G4 后 `masters/**` 与 `dist/**` 只读**；工程内禁绝对路径，保证可搬迁复现。
