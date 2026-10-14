@@ -80,8 +80,8 @@ bootstrap 会自动注入 `https://$MUSIC_DOMAIN`；换域名必须**重新构�
 | `crontab.example` | 备份 / 镜像清理 / 出口定时探测 |
 | `selftest.sh` | bootstrap 的 **mock 自检**（不装 Docker/不联网）：8 组用例 / 38 项断言 |
 | `sync-code.sh` | **代码同步**：`rsync --delete` 镜像语义（无 rsync 则退化），同步后按 `git ls-tree` 自检多了/少了，差异即非零退出；支持 `--dry-run` |
-| `schema-cutover.sh` | **PG schema 切换**：备份 → 停应用 → `DROP SCHEMA` → `alembic upgrade head` → 起应用 → 校验；`users`/`songs` 非空时默认拒绝，需 `--force`；支持 `--dry-run` |
-| `backups/` | `schema-cutover.sh` 的时间戳 `pg_dump` 落盘目录（`.gitignore`，不入库） |
+| `schema-cutover.sh` | **PG schema 切换**（对齐 live 镜像模型）：计划+确认 → 代码同步提示 / 镜像重建 → 闸门 → 备份 → 停应用 → `DROP SCHEMA` → `alembic upgrade head` → 起应用 → 校验；`users`/`songs` 非空时默认拒绝，需 `--force`；支持 `--dry-run` / `--yes` |
+| `backups/` | 脚本目录下的备份目录；`schema-cutover.sh` 默认落到 **`/opt/flow/backups`**（与 live 存量备份同处），可用 `BACKUP_DIR` 覆盖 |
 | `flow/bootstrap.sh` | FLOW(CCM) **共置部署引导**（复用 FLOW 自带 compose/Caddy）：LLM 凭据 fail-closed 闸门 + 构建启动 + 健康检查 |
 | `flow/env.prod.example` | FLOW 生产 `.env` 模板（LLM / Qdrant / 密钥 / 共置 / 杂项 5 段，不含真实密钥） |
 | `flow/README.md` | FLOW 脚手架说明：硬阻塞 / 共置冲突 / 部署步骤 / 启用 Let's Encrypt |
@@ -125,6 +125,12 @@ migrations/versions/c3d4e5f6a7b8_fix_index_unique_drift.py   ← main 已改名�
 ./deploy/hk/sync-code.sh origin/main             # 真同步
 ```
 
+⚠ `sync-code.sh` 的同步目标是**写死的 `$APP_DIR/backend`**（本仓在服务器上的副本）。
+而 `music` 真正吃的是**构建上下文** `/opt/flow/ai-music-platform/backend`（另一个目录）。
+两者不是一回事：`schema-cutover.sh` 第 1 步因此只**打印**面向构建上下文的同步命令
+（`git archive` → 暂存目录 → `rsync -a --delete`），需要人工或前置步骤完成，
+免得"同步了但 build 的还是旧代码"。
+
 ### 2) 为什么 cutover 必须先停应用
 
 想「让迁移重新管辖 schema」的正确顺序是
@@ -133,44 +139,64 @@ migrations/versions/c3d4e5f6a7b8_fix_index_unique_drift.py   ← main 已改名�
 反例是应用还在跑时就重建 schema：应用的 lifespan 会走
 `Base.metadata.create_all`（`SCHEMA_CREATE_ALL=1`）**抢建** 13 张表，随后 alembic 撞上
 「表已存在」而失败。**PG 的 DDL 是事务性的** → 整个 upgrade 回滚，
-`alembic_version` 根本没建起来，而日志里**没有任何显式报错**。
+`alembic_version_music` 根本没建起来，而日志里**没有任何显式报错**。
 
-`schema-cutover.sh` 据此编排，并在第 5 步用**一次性容器**跑迁移，同时显式传
-`SCHEMA_CREATE_ALL=0`，让建表权**唯一归 alembic**：
+`schema-cutover.sh` 据此编排，**并按 live 的真实部署模型对齐**（ISSUE #125）：
+
+- `music` 是**镜像构建**服务（`build.context` = `/opt/flow/ai-music-platform/backend`），
+  代码在**构建期**进镜像 → 只同步文件不 `build`，代码变更不会生效。
+- 该构建上下文**不是 git 仓库** → 同步必须走 `git archive` + `rsync -a --delete`
+  的镜像语义（第 1 步只**打印**命令，需人工或前置步骤完成，脚本不假装能自动同步）。
+- 每条 compose 子命令都带 **`-p flow-hk`**（否则操作默认项目空栈）、
+  **`--profile music`**（否则服务不在生效配置）、
+  **`--env-file /opt/flow/deploy/hk/.env.music`**（漏掉时 `DATABASE_URL` 退回 SQLite 空库）。
+- 迁移一次性容器要 **`--network flow-hk_flow-hk`**（否则解析不到 `flow-hk-music-postgres`），
+  并挂**仓库根** `-v <repo>:/repo -w /repo/backend`（只挂 `backend/` 会让 `import app` 失败）。
+- 校验读的版本表是 **`alembic_version_music`**（X3 与 FLOW 隔离，见 `backend/migrations/env.py`）；
+  查 `alembic_version` 恒为空，会误判"迁移未应用"。
+- 探针走 **Caddy `https://music.anistar.studio/health`** —— prod 的 `openapi.json` 已关闭（404），
+  不能当探针；`admin/*` 预期 503（无 `admin_token` 的环境门控，非 bug）。
+- 全过程**不自动执行上线动作**：先打印计划，交互输入 `yes` 才继续（非交互调用方用 `--yes`）。
 
 ```
-1 数据保护闸门  users / songs 行数 > 0 且无 --force → 拒绝执行（防误删生产）
-2 pg_dump 备份  带时间戳 → deploy/hk/backups/
-3 stop 应用     必须早于 DROP SCHEMA
-4 DROP SCHEMA public CASCADE; CREATE SCHEMA public;
-5 alembic upgrade head   （--rm --no-deps，SCHEMA_CREATE_ALL=0）
-6 start 应用
-7 校验
-8 结果 / 失败恢复指引
+0  计划打印 + 显式确认（交互 yes / --yes）
+1  代码同步到构建上下文（打印镜像式命令；跨机请自行 ssh）
+2  docker compose ... build music            ← 镜像重建，代码在构建期进镜像
+3  数据保护闸门  users / songs 行数 > 0 且无 --force → 拒绝执行（防误删生产）
+4  pg_dump 备份（前置，空备份/无报头即中止）→ $APP_DIR/backups/flow_music-pre-<ts>.sql
+5  stop 应用     必须早于 DROP SCHEMA
+6  DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+7  alembic upgrade head（--rm --no-deps --network flow-hk_flow-hk -v <repo>:/repo -w /repo/backend
+                         -e SCHEMA_CREATE_ALL=0；变量由 --env-file 提供，脚本不插值不打印）
+8  up -d --force-recreate music              ← 只 build 不 recreate 会继续跑旧镜像
+9  校验 + 失败回滚指引
 ```
 
 校验项（任一项不过即非零退出，并打印回滚指引）：
 
-- `alembic_version` 存在且 **== `alembic heads`**
+- `alembic_version_music` 存在且 **== `alembic heads`**
 - `alembic current` 输出
-- public 基础表数量 > 1（只有 `alembic_version` 说明迁移整体回滚了）
+- public 基础表数量 > 1（只有版本表说明迁移整体回滚了）
 - 种子行数：`engine_configs` / `pricing_tiers` / `routing_rules` 均 > 0
 - 公网 `/health` 返回 `{"status":"ok"}`（可用 `PUBLIC_PROBE=0` 跳过）
 
 ```bash
 ./deploy/hk/schema-cutover.sh --dry-run    # 只打印将执行的命令（不连服务器）
-./deploy/hk/schema-cutover.sh              # 空库场景直接跑
+./deploy/hk/schema-cutover.sh              # 交互确认后执行
 ./deploy/hk/schema-cutover.sh --force      # users/songs 有真实数据时，显式确认后重跑
+./deploy/hk/schema-cutover.sh --yes        # 非交互调用（CI/自动化）跳过确认
 ```
 
-可用环境变量：`APP_DIR`、`COMPOSE_FILE`、`COMPOSE_FILE_OVERRIDES`、`SERVICE`、
-`PG_SERVICE`、`DB_NAME`、`PG_USER`、`PUBLIC_HEALTH_URL`、`PUBLIC_PROBE`、`BACKUP_DIR`。
+可用环境变量：`APP_DIR`、`COMPOSE_FILE`、`COMPOSE_FILE_OVERRIDES`、`COMPOSE_PROJECT_NAME`、
+`ENV_FILE`、`PROFILES`、`SERVICE`、`BUILD_CONTEXT`、`REPO_DIR`、`SYNC_REF`、`PG_SERVICE`、
+`PG_NETWORK`、`DB_NAME`、`PG_USER`、`BACKUP_DIR`、`PUBLIC_HEALTH_URL`、`PUBLIC_PROBE`。
+路径/网络名/域名均以 live 实测为准，不确定处在脚本注释里已标注。
 
 ### 3) 回滚方式
 
 | 场景 | 回滚动作 |
 |---|---|
-| 迁移后校验不过 | 用第 2 步的备份恢复：`stop music` → `psql -d flow_music < deploy/hk/backups/flow_music-schema-cutover-<TS>.sql` → `up -d music` |
+| 迁移后校验不过 | 用第 4 步的备份恢复（脚本失败时会打印可直接复制的三条命令）：`docker compose -p flow-hk --env-file /opt/flow/deploy/hk/.env.music --profile music stop music` → `docker exec -i flow-hk-music-postgres psql -U flow_music -d flow_music < /opt/flow/backups/flow_music-pre-<TS>.sql` → 同前缀 `up -d music` |
 | PG 整体不可用（临时保命） | 改 `.env` 的 `DATABASE_URL` 回 `sqlite:////app/data/app.db`，置 `SCHEMA_CREATE_ALL=1`，`docker compose up -d --force-recreate music` |
 | 代码同步后要回退版本 | 重跑 `./deploy/hk/sync-code.sh <旧 ref>` —— 镜像语义会把新版本多出的文件删掉，不留幽灵 |
 
