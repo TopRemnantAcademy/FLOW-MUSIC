@@ -282,6 +282,84 @@ export type AdminStats = {
   total_margin_cny?: number;
 };
 
+// —— GAP-020 产品分析看板 ——
+// ⚠️ 所有数字都是**代理口径**：本仓库无 UserEvent 事件表（禁新增迁移），
+// 活跃用户只覆盖「产生过作品/互动」的人，播放量是全量累计不可切窗。
+// 每个 block 的 basis/caveat 是后端下发的权威口径说明，页面**必须原样展示**——
+// 把代理值当精确 DAU 讲给业务方，比没有看板更糟。
+export type MetricCaveat = {
+  basis: string;
+  caveat: string;
+};
+
+export type AnalyticsActiveUsers = {
+  value: number;
+  peak_daily: number;
+  daily: Record<string, number>;
+} & MetricCaveat;
+
+export type AnalyticsOverview = {
+  window_days: number;
+  generated_total: number;
+  completed: number;
+  failed: number;
+  inflight: number;
+  completion_rate: number;
+  by_status: Record<string, number>;
+  new_users: number;
+  active_users: AnalyticsActiveUsers;
+  daily_generated: Record<string, number>;
+};
+
+export type AnalyticsProviders = {
+  window_days: number;
+  total: number;
+  by_engine: Record<string, number>;
+  by_task_type: Record<string, number>;
+} & MetricCaveat;
+
+export type AnalyticsFailures = {
+  window_days: number;
+  total_failed: number;
+  top: { reason: string; count: number; share: number }[];
+} & MetricCaveat;
+
+export type AnalyticsFunnelStep = {
+  key: string;
+  label: string;
+  users: number;
+  from_prev: number;
+  from_top: number;
+};
+
+export type AnalyticsFunnel = {
+  window_days: number;
+  steps: AnalyticsFunnelStep[];
+  paid_users: number;
+  paid_revenue_cny: number;
+  arppu_cny: number;
+} & MetricCaveat;
+
+export type AnalyticsEngagement = {
+  window_days: number;
+  play_count_all_time: number;
+  likes_in_window: number;
+  favorites_in_window: number;
+  ratings_in_window: number;
+  top_played: { song_id: number; title: string; play_count: number; is_public: boolean }[];
+} & MetricCaveat;
+
+export type AnalyticsSummary = {
+  window_days: number;
+  generated_at: string;
+  overview: AnalyticsOverview;
+  providers: AnalyticsProviders;
+  failures: AnalyticsFailures;
+  funnel: AnalyticsFunnel;
+  engagement: AnalyticsEngagement;
+  disclaimer: string;
+};
+
 // —— 跨域账号桥接：FLOW 订阅者 ↔ 音乐用户（user_links，零 PII）——
 // 后端 GET /api/admin/user-links 仅返回关联与订阅状态；email 绝不以原文出现。
 export type UserLinkSubscription = {
@@ -1130,6 +1208,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ tier_key: tierKey }),
     }),
+  // —— GAP-020 产品分析看板（只读聚合，口径见 AnalyticsSummary 注释）——
+  adminAnalyticsSummary: (days: 7 | 30 = 7) =>
+    requestAdmin<AnalyticsSummary>(`/api/admin/analytics/summary?days=${days}`),
   // —— GAP-023 财务结算（成本侧对账仍是 api.adminBilling，两者互补）——
   adminSettlement: (days?: number) =>
     requestAdmin<Settlement>(`/api/admin/settlement${days ? `?days=${days}` : ""}`),

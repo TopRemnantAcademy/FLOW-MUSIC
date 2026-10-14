@@ -12,7 +12,7 @@ from app.audit import log_admin_access
 from app.config import settings
 from app.db import init_db
 from app.mureka_health import run_startup_preflight
-from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share, lyrics, export, release, users
+from app.routers import admin, auth, songs, flow, billing, plaza, library, search, share, lyrics, export, release, users, analytics_dashboard
 from app.routers.auth import _resolve_admin_role
 
 log = logging.getLogger("music-api")
@@ -204,6 +204,8 @@ app.include_router(share.router)
 app.include_router(lyrics.router)
 # 应用内更新日志（GAP-040）：当前版本 / 是否有新版本 / 要点（无 DB 依赖）
 app.include_router(release.router)
+# 产品分析看板（GAP-020）：/api/admin/analytics/*，只读聚合，无新表/无迁移（口径见模块头部）
+app.include_router(analytics_dashboard.router)
 
 
 @app.get("/health")

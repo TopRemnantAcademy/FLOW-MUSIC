@@ -14,6 +14,7 @@
  *   /admin/billing         → 成本对账（Mureka 实时账单 vs 本站估算成本）
  *   /admin/audit           → 审计日志（后台管理操作记录）
  *   /admin/user-links      → 跨域账号桥接（FLOW 订阅者 ↔ 音乐用户，零 PII）
+ *   /admin/analytics       → 产品分析看板（GAP-020：生成/漏斗/失败原因，代理口径）
  */
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -22,6 +23,12 @@ import { clearAdminKey, getAdminKey } from "@/lib/adminAuth";
 import AdminGuard from "@/components/AdminGuard";
 
 const ENTRIES = [
+  {
+    href: "/admin/analytics",
+    emoji: "📈",
+    title: "产品分析",
+    desc: "生成量/完成率/转化漏斗/失败原因（代理口径，页面内标注局限）",
+  },
   {
     href: "/admin/users",
     emoji: "👥",
