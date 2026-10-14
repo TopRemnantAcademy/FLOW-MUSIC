@@ -39,15 +39,18 @@ import {
   useAudioTime,
 } from "@/lib/audioBus";
 import { useEffect, useState } from "react";
+import { useT } from "@/lib/i18n";
 
-// 循环模式中文名：状态要能被读屏单独读出来，而不只是一个可点按钮
-const REPEAT_CN: Record<string, string> = {
-  none: "关闭",
-  all: "列表循环",
-  one: "单曲循环",
+// 循环模式的词典 key：状态要能被读屏单独读出来，而不只是一个可点按钮。
+const REPEAT_KEY: Record<string, string> = {
+  none: "player.repeatOff",
+  all: "player.repeatAll",
+  one: "player.repeatOne",
 };
 
 export default function BottomPlayer() {
+  // t(time) 是本文件既有的播放时间读数；翻译用 tr，避免遮蔽。
+  const tr = useT();
   const { playlist, prefs, ab } = usePlayback();
   const { playing, duration, volume, muted, src: busStatusSrc } = useAudioStatus();
   const t = useAudioTime();
@@ -80,15 +83,15 @@ export default function BottomPlayer() {
   // 状态复用 —— 那种设计在 AB 关掉后按 A 会莫名其妙造出区间。
   const onMarkA = () => {
     setAbA(t);
-    setAbHint(`A 点已设在 ${fmtClock(t)}`);
+    setAbHint(tr("player.abSetA", { time: fmtClock(t) }));
   };
   const onMarkB = () => {
     if (!ab) {
-      setAbHint("请先打 A 点");
+      setAbHint(tr("player.abNeedA"));
       return;
     }
     if (!setAbB(t)) {
-      setAbHint(`B 点需在 A 点之后至少 ${AB_MIN_SPAN}s`);
+      setAbHint(tr("player.abNeedSpan", { span: AB_MIN_SPAN }));
       return;
     }
     setAbHint(`循环 ${fmtClock(ab.a)} → ${fmtClock(t)}`);
@@ -127,13 +130,13 @@ export default function BottomPlayer() {
       busSeek(duration);
     }
   };
-  };
 
   return (
     <>
     {/* 播放状态改由下方 aria-live 播报，图标/文字本身对读屏隐藏以免重复朗读 */}
     <span className="sr-only" role="status" aria-live="polite">
-      {playing ? "正在播放" : "已暂停"}：{song.title || "未命名"}（队列 {pos}/{playlist.songs.length}）
+      {playing ? tr("player.playing") : tr("player.paused")}：{song.title || tr("common.unnamed")}
+      （{tr("player.queue")} {pos}/{playlist.songs.length}）
     </span>
     <div className="fixed inset-x-0 bottom-0 z-30 border-t border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur">
       {/* 波形 seek（GAP-013）：可点击/拖动即跳转，复用同一个 audioBus 元素。
@@ -143,13 +146,13 @@ export default function BottomPlayer() {
           本批次该文件被划为不可改（并行任务冲突面），故这里如实退化为
           「进度条 seek」而不是画一根编出来的假波形。
           波形能力在**分享页**（`/share/[token]`）是完整可用的。 */}
-      <Waveform src={busStatusSrc} height={44} label={`${song.title || "曲目"} 波形`} peaksUrl={null} />
+      <Waveform src={busStatusSrc} height={44} label={tr("player.waveform", { title: song.title || tr("player.track") })} peaksUrl={null} />
 
       {/* 进度条：整条可点可拖；不单独放 range 是因为移动端 thumb 太小，点更准 */}
       <div
         role="slider"
         tabIndex={0}
-        aria-label="播放进度"
+        aria-label={tr("player.progress")}
         aria-valuemin={0}
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(t)}
@@ -182,7 +185,7 @@ export default function BottomPlayer() {
             <div className="h-10 w-10 shrink-0 rounded-md border border-[var(--border)]" />
           )}
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium">{song.title || "未命名"}</p>
+            <p className="truncate text-sm font-medium">{song.title || tr("common.unnamed")}</p>
             <p className="truncate text-xs text-[var(--muted)]">队列 {pos}/{playlist.songs.length}</p>
           </div>
         </div>
@@ -193,7 +196,7 @@ export default function BottomPlayer() {
             type="button"
             onClick={back}
             className="btn btn-ghost btn-sm"
-            aria-label="上一首"
+            aria-label={tr("player.prev")}
           >
             上一首
           </button>
@@ -201,15 +204,15 @@ export default function BottomPlayer() {
             type="button"
             onClick={busToggle}
             className="btn btn-primary btn-sm min-w-[4.5rem]"
-            aria-label={playing ? "暂停" : "播放"}
+            aria-label={playing ? tr("player.pause") : tr("player.play")}
           >
-            {playing ? "暂停" : "播放"}
+            {playing ? tr("player.pause") : tr("player.play")}
           </button>
           <button
             type="button"
             onClick={advance}
             className="btn btn-ghost btn-sm"
-            aria-label="下一首"
+            aria-label={tr("player.next")}
           >
             下一首
           </button>
@@ -224,10 +227,10 @@ export default function BottomPlayer() {
             type="button"
             onClick={busToggleMute}
             className="btn btn-ghost btn-sm"
-            aria-label={muted ? "取消静音（当前已静音）" : "静音"}
+            aria-label={muted ? tr("player.unmuteMuted") : tr("player.mute")}
             aria-pressed={muted}
           >
-            {muted ? "已静音" : "音量"}
+            {muted ? tr("player.muted") : tr("player.volume")}
           </button>
           <input
             type="range"
@@ -236,7 +239,7 @@ export default function BottomPlayer() {
             step={0.01}
             value={muted ? 0 : volume}
             onChange={(e) => busSetVolume(Number(e.target.value))}
-            aria-label="音量"
+            aria-label={tr("player.volume")}
             className="hidden h-1 w-24 cursor-pointer accent-[var(--ink)] sm:block"
           />
           {/* AB 重复：练唱/编曲比对。三个按钮常驻但语义单一，
@@ -245,8 +248,8 @@ export default function BottomPlayer() {
             type="button"
             onClick={onMarkA}
             className={`btn btn-sm ${ab ? "btn-primary" : "btn-ghost"}`}
-            aria-label="设置 A 点"
-            title="在当前位置打 A 点（区间起点）"
+            aria-label={tr("player.setA")}
+            title={tr("player.setATitle")}
           >
             A
           </button>
@@ -254,8 +257,8 @@ export default function BottomPlayer() {
             type="button"
             onClick={onMarkB}
             className={`btn btn-sm ${loop ? "btn-primary" : "btn-ghost"}`}
-            aria-label="设置 B 点"
-            title={`在当前位置打 B 点（区间终点，须比 A 点晚至少 ${AB_MIN_SPAN}s）`}
+            aria-label={tr("player.setB")}
+            title={tr("player.setBTitle", { span: AB_MIN_SPAN })}
           >
             B
           </button>
@@ -264,8 +267,8 @@ export default function BottomPlayer() {
             onClick={onClearAb}
             disabled={!ab}
             className="btn btn-ghost btn-sm"
-            aria-label="清除 AB 区间"
-            title="清除 AB 区间"
+            aria-label={tr("player.clearAb")}
+            title={tr("player.clearAb")}
           >
             AB 清
           </button>
@@ -273,19 +276,22 @@ export default function BottomPlayer() {
             type="button"
             onClick={toggleShuffle}
             className="btn btn-ghost btn-sm"
-            aria-label="随机"
+            aria-label={tr("player.shuffle")}
             aria-pressed={prefs.shuffle}
           >
-            随机{prefs.shuffle ? "开" : "关"}
+            {tr("player.shuffle")}
+            {prefs.shuffle ? tr("player.shuffleOn") : tr("player.shuffleOff")}
           </button>
           <button
             type="button"
             onClick={cycleRepeat}
             className="btn btn-ghost btn-sm"
-            aria-label={`循环模式：${REPEAT_CN[prefs.repeat] ?? "关"}`}
-            title="点击切换：关 → 列表循环 → 单曲循环"
+            aria-label={tr("player.repeatMode", {
+              mode: tr(REPEAT_KEY[prefs.repeat] ?? "player.repeatOff"),
+            })}
+            title={tr("player.repeatTitle")}
           >
-            {prefs.repeat === "none" ? "循环关" : prefs.repeat === "all" ? "列表循环" : "单曲循环"}
+            {tr(REPEAT_KEY[prefs.repeat] ?? "player.repeatOff")}
           </button>
         </div>
       </div>
@@ -294,9 +300,9 @@ export default function BottomPlayer() {
       {(loop || ab || abHint) && (
         <p className="mx-auto max-w-5xl px-4 pb-1 text-xs text-[var(--muted)]">
           {loop
-            ? `AB 循环中 ${fmtClock(loop.a)} → ${fmtClock(loop.b)}`
+            ? tr("player.abLooping", { a: fmtClock(loop.a), b: fmtClock(loop.b) })
             : ab
-            ? `A 点 ${fmtClock(ab.a)}（待设 B 点）`
+            ? tr("player.pointA", { a: fmtClock(ab.a) })
             : ""}
           {abHint ? `${loop || ab ? " · " : ""}${abHint}` : ""}
         </p>

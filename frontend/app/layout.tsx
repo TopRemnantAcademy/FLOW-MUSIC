@@ -3,6 +3,9 @@ import Script from "next/script";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth";
 import { ThemeProvider, noFlashScript } from "@/lib/theme";
+import { LocaleProvider } from "@/lib/i18n";
+import { translate, HTML_LANG } from "@/lib/i18n-catalog";
+import { resolveLocale } from "@/lib/i18n-server";
 import NavBar from "@/components/NavBar";
 import AnalyticsTracker from "@/components/AnalyticsTracker";
 import BottomPlayer from "@/components/BottomPlayer";
@@ -43,19 +46,24 @@ export const viewport: Viewport = {
   themeColor: "#0f0f0f",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // [GAP-017] locale 由 cookie 决定（确定性输入，SSR/CSR 一致 → 无 hydration mismatch）。
+  const locale = await resolveLocale();
+  // 跳过链接文案在服务端直接取词典，避免为一个纯文本再包一层 Client Component。
+  const skipLabel = translate(locale, "nav.skipToContent");
   return (
-    <html lang="zh-CN" suppressHydrationWarning>
+    <html lang={HTML_LANG[locale]} suppressHydrationWarning>
       <head>
         {/* 首屏无闪烁：于首帧前应用 data-theme */}
         <script dangerouslySetInnerHTML={{ __html: noFlashScript }} />
       </head>
       <body className="theme-transition min-h-screen">
         <ThemeProvider>
+          <LocaleProvider initialLocale={locale}>
           <AuthProvider>
             {/* 跳转到主内容：键盘/读屏用户绕过导航栏（a11y，GAP-024） */}
             <a href="#main-content" className="skip-link">
-              跳到主要内容
+              {skipLabel}
             </a>
             <NavBar />
             <AnalyticsTracker />
@@ -64,6 +72,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
             <BottomPlayer />
           </AuthProvider>
+          </LocaleProvider>
           {/* [GAP-018] PWA 装配：SW 注册 / A2HS / 离线提示。
               内部全部 feature-detect —— Capacitor(APK) 环境自动静默跳过。 */}
           <PwaSetup />

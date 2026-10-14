@@ -24,3 +24,33 @@ jobs:
         run: alembic check
       - name: Run tests
         run: python -m pytest tests/ -q
+
+  # [GAP-017] 前端门禁。此前仓库**没有**前端 CI —— 这正是 #80/#81 引入动态路由时
+  # 漏掉 generateStaticParams、把 APK 静态导出静默打挂却无人发现的原因
+  # （tsc/next build 都不会报错，只有 APK_BUILD=1 才会）。
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Web build
+        run: npx next build
+      - name: i18n 自检（词典 key 一致性 / 静态导出可枚举 / locale 持久化接线）
+        run: node scripts/verify-i18n.mjs
+      - name: PWA 自检（GAP-018 回归）
+        run: node scripts/verify-pwa.mjs
+      - name: APK 静态导出（Wave 1 硬验收：APK_BUILD=1 不得破）
+        run: node scripts/build-apk.mjs --api=https://api.anistar.studio
+      - name: 硬编码中文扫描（仅报告，不阻断）
+        run: node scripts/scan-hardcoded-i18n.mjs

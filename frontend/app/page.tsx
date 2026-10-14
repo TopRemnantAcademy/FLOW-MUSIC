@@ -1,7 +1,13 @@
 import Link from "next/link";
 import HomeFeed from "@/components/HomeFeed";
+import { resolveLocale } from "@/lib/i18n-server";
+import { translate } from "@/lib/i18n-catalog";
 
-export default function Home() {
+// 首页是 Server Component：直接用服务端解析出的 locale 取词典。
+// 这样首屏就是正确语言，且与客户端 LocaleProvider 的 initialLocale 同值 → 无 mismatch。
+export default async function Home() {
+  const locale = await resolveLocale();
+  const t = (key: string) => translate(locale, key);
   return (
     <>
       {/* 首屏：品牌 + 主行动，占满一屏并留出下拉空间 */}
@@ -31,26 +37,26 @@ export default function Home() {
             className="enter enter-delay-2 mx-auto max-w-xl text-[var(--muted)]"
             style={{ fontSize: "clamp(1rem, 2.5vw, 1.25rem)" }}
           >
-            输入想法，自动生成完整带人声歌曲 —— 敬拜、灵修、生活的歌。
+            {t("home.tagline")}
           </p>
         </div>
 
         <div className="enter enter-delay-3 flex flex-col items-center gap-4">
           <Link href="/create" className="btn btn-primary btn-lg px-8">
-            开始创作
+            {t("home.startCreate")}
           </Link>
           <div className="flex items-center gap-6 text-sm">
             <Link
               href="/plaza"
               className="text-[var(--ink-soft)] underline-offset-4 transition hover:text-[var(--ink)] hover:underline"
             >
-              FLOW广场
+              {t("home.plaza")}
             </Link>
             <Link
               href="/library"
               className="text-[var(--ink-soft)] underline-offset-4 transition hover:text-[var(--ink)] hover:underline"
             >
-              我的作品
+              {t("home.myWorks")}
             </Link>
           </div>
         </div>
@@ -58,10 +64,10 @@ export default function Home() {
         {/* 脉冲下滑提示：引导用户看到「其他人的作品」 */}
         <Link
           href="#others"
-          aria-label="向下查看其他人的作品"
+          aria-label={t("home.othersAria")}
           className="scroll-hint mt-2 flex flex-col items-center gap-1 text-[var(--muted)] transition hover:text-[var(--ink)]"
         >
-          <span className="text-xs tracking-[0.2em]">其他人的作品</span>
+          <span className="text-xs tracking-[0.2em]">{t("home.others")}</span>
           <svg
             width="20"
             height="20"

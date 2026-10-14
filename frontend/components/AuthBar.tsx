@@ -3,8 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useT } from "@/lib/i18n";
 
 export default function AuthBar() {
+  const t = useT();
   const { isAuthed, email, login, logout } = useAuth();
   const [emailInput, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -44,7 +46,7 @@ export default function AuthBar() {
       setEmail("");
       setPassword("");
     } catch (err: any) {
-      setMsg(err?.message || "失败");
+      setMsg(err?.message || t("auth.failed"));
     }
   }
 
@@ -53,14 +55,14 @@ export default function AuthBar() {
     try {
       const cfg = await api.googleConfig();
       if (!cfg.enabled) {
-        setMsg("Google 登录未启用");
+        setMsg(t("auth.googleDisabled"));
         return;
       }
       // Google Identity Services 로 ID 토큰 획득 → 백엔드 검증 → cookie 세팅
       const g = (window as any).google;
       await new Promise<void>((resolve, reject) => {
         if (!g || !g.accounts) {
-          reject(new Error("Google SDK 未加载"));
+          reject(new Error(t("auth.googleSdkMissing")));
           return;
         }
         g.accounts.id.initialize({
@@ -78,17 +80,17 @@ export default function AuthBar() {
         });
         g.accounts.id.prompt((notification: any) => {
           if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-            reject(new Error("Google 登录窗口未显示，请关闭弹窗拦截"));
+            reject(new Error(t("auth.googlePopupBlocked")));
           }
         });
       });
     } catch (err: any) {
-      setMsg(err?.message || "Google 登录失败");
+      setMsg(err?.message || t("auth.googleFailed"));
     }
   }
 
   if (isAuthed) {
-    const name = email ? email.split("@")[0] : "已登录";
+    const name = email ? email.split("@")[0] : t("auth.signedIn");
     return (
       <div className="flex items-center gap-2">
         <span
@@ -102,7 +104,7 @@ export default function AuthBar() {
           onClick={logout}
           className="btn btn-ghost btn-sm"
         >
-          退出
+          {t("auth.logout")}
         </button>
       </div>
     );
@@ -117,46 +119,46 @@ export default function AuthBar() {
         aria-expanded={open}
         aria-haspopup="dialog"
       >
-        {open ? "关闭" : mode === "login" ? "登录" : "注册"}
+        {open ? t("auth.close") : mode === "login" ? t("auth.login") : t("auth.register")}
       </button>
       {open && (
         <form
           onSubmit={submit}
           role="dialog"
-          aria-label={mode === "login" ? "登录" : "注册"}
+          aria-label={mode === "login" ? t("auth.login") : t("auth.register")}
           className="card absolute right-0 z-10 mt-2 w-64 space-y-2 p-3 shadow-lg"
         >
           <input
             value={emailInput}
             onChange={(e) => setEmail(e.target.value)}
             type="email"
-            placeholder="邮箱"
-            aria-label="邮箱"
+            placeholder={t("auth.email")}
+            aria-label={t("auth.email")}
             className="input"
           />
           <input
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             type="password"
-            placeholder="密码"
-            aria-label="密码"
+            placeholder={t("auth.password")}
+            aria-label={t("auth.password")}
             className="input"
           />
           <button
             type="submit"
             className="btn btn-primary w-full"
           >
-            {mode === "login" ? "登录" : "注册"}
+            {mode === "login" ? t("auth.login") : t("auth.register")}
           </button>
           {googleEnabled && (
             <>
-              <div className="divider"><span>或</span></div>
+              <div className="divider"><span>{t("auth.or")}</span></div>
               <button
                 type="button"
                 onClick={googleLogin}
                 className="btn btn-secondary w-full"
               >
-                使用 Google 登录
+                {t("auth.googleLogin")}
               </button>
             </>
           )}
@@ -165,7 +167,7 @@ export default function AuthBar() {
             onClick={() => setMode(mode === "login" ? "register" : "login")}
             className="btn btn-ghost w-full text-xs"
           >
-            {mode === "login" ? "去注册" : "去登录"}
+            {mode === "login" ? t("auth.goRegister") : t("auth.goLogin")}
           </button>
           {msg && (
             <p className="text-xs text-[var(--danger)]" role="alert">

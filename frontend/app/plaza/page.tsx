@@ -5,6 +5,7 @@ import Link from "next/link";
 import { api, SongView } from "@/lib/api";
 import { trackSearch } from "@/lib/eventReporter";
 import Player from "@/components/Player";
+import { useT } from "@/lib/i18n";
 
 const PAGE = 20;
 
@@ -60,10 +61,11 @@ function IconFav() {
   );
 }
 
-const SORTS: { key: SortKey; label: string; Icon: () => JSX.Element }[] = [
-  { key: "hot", label: "热门", Icon: IconHot },
-  { key: "new", label: "最新", Icon: IconNew },
-  { key: "top", label: "高分", Icon: IconTop },
+// labelKey 走词典（GAP-017），渲染时 t() 取当前语言。
+const SORTS: { key: SortKey; labelKey: string; Icon: () => JSX.Element }[] = [
+  { key: "hot", labelKey: "plaza.sortHot", Icon: IconHot },
+  { key: "new", labelKey: "plaza.sortNew", Icon: IconNew },
+  { key: "top", labelKey: "plaza.sortTop", Icon: IconTop },
 ];
 
 /** 星标评分控件：1–5 星，点击即可评分 / 改分。广场不做留言，只保留无文本互动。 */
@@ -78,14 +80,15 @@ function StarRating({
   disabled?: boolean;
   songTitle?: string | null;
 }) {
+  const t = useT();
   const [hover, setHover] = useState<number | null>(null);
   const shown = hover ?? value ?? 0;
-  const who = songTitle ? `《${songTitle}》` : "本曲";
+  const who = songTitle ? `《${songTitle}》` : t("plaza.thisSong");
   return (
     <span
       className="inline-flex items-center gap-0.5"
       role="group"
-      aria-label={`${who}评分（当前 ${value ?? 0} 星）`}
+      aria-label={t("plaza.rateGroup", { title: who, count: value ?? 0 })}
     >
       {[1, 2, 3, 4, 5].map((n) => (
         <button
@@ -98,7 +101,7 @@ function StarRating({
           className={`text-base leading-none transition disabled:opacity-50 ${
             n <= shown ? "text-[var(--ink)]" : "text-[var(--muted)]"
           } ${!disabled && "hover:scale-110"}`}
-          aria-label={`给${who}打 ${n} 星`}
+          aria-label={t("plaza.rateOne", { title: who, count: n })}
           aria-pressed={value === n}
         >
           ★
@@ -122,6 +125,7 @@ function InteractRow({
   onFavorite: () => void;
   onRate: (n: number) => void;
 }) {
+  const t = useT();
   return (
     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-[var(--border)] pt-3 text-sm">
       {/* GAP-015：作者名可点进公开资料页（/api/users/{id}）。
@@ -131,13 +135,13 @@ function InteractRow({
         <Link
           href={`/u/${song.author_id}`}
           className="text-[var(--muted)] underline-offset-4 transition hover:text-[var(--ink)] hover:underline"
-          aria-label={`查看 ${song.author_name || "作者"} 的主页`}
+          aria-label={t("plaza.authorPage", { name: song.author_name || t("plaza.author") })}
         >
-          {song.author_name ? `by ${song.author_name}` : "社区作品"}
+          {song.author_name ? `by ${song.author_name}` : t("plaza.communityWork")}
         </Link>
       ) : (
         <span className="text-[var(--muted)]">
-          {song.author_name ? `by ${song.author_name}` : "社区作品"}
+          {song.author_name ? `by ${song.author_name}` : t("plaza.communityWork")}
         </span>
       )}
 
@@ -149,8 +153,11 @@ function InteractRow({
             ? "text-[var(--ink)]"
             : "text-[var(--muted)] hover:text-[var(--ink-soft)]"
         }`}
-        title="点赞（可取消）"
-        aria-label={`${song.liked_by_me ? "取消点赞" : "点赞"}（当前 ${song.like_count || 0} 赞）`}
+        title={t("plaza.likeTitle")}
+        aria-label={t("plaza.likeAria", {
+          action: song.liked_by_me ? t("plaza.unlike") : t("plaza.like"),
+          count: song.like_count || 0,
+        })}
         aria-pressed={!!song.liked_by_me}
       >
         {song.liked_by_me ? "♥" : "♡"} {song.like_count || 0}
@@ -164,11 +171,15 @@ function InteractRow({
             ? "text-[var(--ink)]"
             : "text-[var(--muted)] hover:text-[var(--ink-soft)]"
         }`}
-        title="收藏（可取消）"
-        aria-label={`${song.favorited_by_me ? "取消收藏" : "收藏"}（当前 ${song.favorite_count || 0} 次收藏）`}
+        title={t("plaza.favTitle")}
+        aria-label={t("plaza.favAria", {
+          action: song.favorited_by_me ? t("plaza.unfavorite") : t("plaza.favorite"),
+          count: song.favorite_count || 0,
+        })}
         aria-pressed={!!song.favorited_by_me}
       >
-        {song.favorited_by_me ? "★已藏" : "☆收藏"} {song.favorite_count || 0}
+        {song.favorited_by_me ? `★${t("plaza.faved")}` : `☆${t("plaza.favorite")}`}{" "}
+        {song.favorite_count || 0}
       </button>
 
       <span className="flex items-center gap-1.5">
@@ -181,7 +192,7 @@ function InteractRow({
         <span className="text-xs text-[var(--muted)]">
           {song.rating_count
             ? `${song.rating_avg?.toFixed(1)} (${song.rating_count})`
-            : "暂无评分"}
+            : t("plaza.noRating")}
         </span>
       </span>
     </div>
@@ -189,6 +200,7 @@ function InteractRow({
 }
 
 export default function PlazaPage() {
+  const t = useT();
   const [songs, setSongs] = useState<SongView[]>([]);
   const [sort, setSort] = useState<SortKey>("hot");
   const [view, setView] = useState<"feed" | "favorites">("feed");
@@ -229,8 +241,8 @@ export default function PlazaPage() {
       setHasMore(data.length === PAGE);
     } catch (e: any) {
       if (seq !== reqSeq.current) return;
-      if (e?.status === 401) setError("登录已过期或无效，请重新登录（右上角）。");
-      else setError(e?.message || "加载失败");
+      if (e?.status === 401) setError(t("common.loginExpired"));
+      else setError(e?.message || t("common.loadFailed"));
     } finally {
       if (seq !== reqSeq.current) return;
       if (initial) setLoading(false);
@@ -251,8 +263,8 @@ export default function PlazaPage() {
     } catch (e: any) {
       if (seq !== reqSeq.current) return;
       if (e?.status === 401)
-        setError("请先登录后再查看收藏（右上角）。浏览广场无需登录。");
-      else setError(e?.message || "加载收藏失败");
+        setError(t("plaza.loginForFav"));
+      else setError(e?.message || t("plaza.favLoadFailed"));
     } finally {
       if (seq !== reqSeq.current) return;
       if (initial) setLoading(false);
@@ -298,8 +310,8 @@ export default function PlazaPage() {
       // 广场可匿名浏览，但互动必须登录 — 401 은 "세션 만료" 가 아니라 "미로그인" 이다.
       setError(
         e?.status === 401
-          ? "点赞 / 收藏 / 评分需要先登录（右上角）。浏览作品无需登录。"
-          : e?.message || "操作失败"
+          ? t("plaza.loginForAction")
+          : e?.message || t("plaza.actionFailed")
       );
     } finally {
       setBusyId(null);
@@ -360,7 +372,7 @@ export default function PlazaPage() {
                 aria-pressed={sort === s.key}
               >
                 <Icon />
-                {s.label}
+                {t(s.labelKey)}
               </button>
             );
           })}
@@ -373,9 +385,9 @@ export default function PlazaPage() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索标题或歌词…"
+            placeholder={t("plaza.searchPlaceholder")}
             className="input pl-9"
-            aria-label="搜索作品"
+            aria-label={t("plaza.searchAria")}
           />
         </div>
       </div>
@@ -416,8 +428,8 @@ export default function PlazaPage() {
         <div className="card p-8 text-center">
           <p className="text-[var(--muted)]">
             {q
-              ? "没有匹配的作品。"
-              : "广场里还没有作品，去「我的作品」发布一首吧。"}
+              ? t("plaza.emptySearch")
+              : t("plaza.empty")}
           </p>
         </div>
       )}
@@ -431,7 +443,7 @@ export default function PlazaPage() {
               <article
                 key={s.id}
                 className="card lift enter p-4"
-                aria-label={`社区作品《${s.title || "未命名"}》`}
+                aria-label={t("plaza.songAria", { title: s.title || t("common.unnamed") })}
                 style={{ animationDelay: `${Math.min(i, 6) * 50}ms` }}
               >
                 {rank >= 0 && rank < 3 && (
@@ -485,7 +497,7 @@ export default function PlazaPage() {
           className="btn btn-secondary mt-6 w-full"
           aria-busy={loadingMore}
         >
-          {loadingMore ? "加载中…" : "加载更多"}
+          {loadingMore ? t("common.loading") : t("plaza.loadMore")}
         </button>
       )}
     </main>

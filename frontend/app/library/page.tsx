@@ -5,10 +5,12 @@ import Link from "next/link";
 import { api, ExportResult, FolderView, PlaylistView, SongView, TrashItem } from "@/lib/api";
 import Player from "@/components/Player";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import { useT } from "@/lib/i18n";
 
 const PAGE = 20;
 
 export default function LibraryPage() {
+  const t = useT();
   const [songs, setSongs] = useState<SongView[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -66,8 +68,8 @@ export default function LibraryPage() {
       setOffset(next + data.length);
       setHasMore(data.length === PAGE);
     } catch (e: any) {
-      if (e?.status === 401) setError("登录已过期或无效，请重新登录（右上角）。");
-      else setError(e?.message || "加载失败");
+      if (e?.status === 401) setError(t("common.loginExpired"));
+      else setError(e?.message || t("common.loadFailed"));
     } finally {
       if (initial) setLoading(false);
       else setLoadingMore(false);
@@ -80,7 +82,7 @@ export default function LibraryPage() {
       setPlaylists(pls);
       setFolders(fds);
     } catch (e: any) {
-      if (e?.status !== 401) setError(e?.message || "歌单/分组加载失败");
+      if (e?.status !== 401) setError(e?.message || t("library.playlistLoadFailed"));
     }
   }
 
@@ -89,7 +91,7 @@ export default function LibraryPage() {
     try {
       setTrash(await api.trash());
     } catch (e: any) {
-      setError(e?.message || "回收站加载失败");
+      setError(e?.message || t("library.trashLoadFailed"));
     } finally {
       setTrashLoading(false);
     }
@@ -119,11 +121,15 @@ export default function LibraryPage() {
     if (skipped.length === 0) return "";
     const withReason = skipped.filter((x): x is { id: number; reason: string } => typeof x !== "number");
     return withReason.length
-      ? `，跳过 ${skipped.length} 首（${withReason.map((x) => x.reason).join("；")}）`
-      : `，跳过 ${skipped.length} 首`;
+      ? t("library.skipWithReason", {
+          count: skipped.length,
+          reasons: withReason.map((x) => x.reason).join(" / "),
+        })
+      : t("library.skip", { count: skipped.length });
   }
 
-  async function runBatch(fn: (ids: number[]) => Promise<any>, label: string, dropFromList = false) {
+  // labelKey 走词典（GAP-017），失败文案也按同一标签拼。
+  async function runBatch(fn: (ids: number[]) => Promise<any>, labelKey: string, dropFromList = false) {
     if (selected.length === 0) return;
     setBatchBusy(true);
     setNotice("");
@@ -131,12 +137,12 @@ export default function LibraryPage() {
       const r = await fn(selected);
       const n =
         r.deleted?.length ?? r.updated?.length ?? r.added?.length ?? 0;
-      setNotice(`${label}：${n} 首${describeSkip(r.skipped)}`);
+      setNotice(`${t(labelKey)}：${t("library.batchCount", { count: n })}${describeSkip(r.skipped)}`);
       if (dropFromList) setSongs((prev) => prev.filter((s) => !selected.includes(s.id)));
       setSelected([]);
       if (tab === "trash") await loadTrash();
     } catch (e: any) {
-      setError(e?.message || `${label}失败`);
+      setError(e?.message || t("library.batchFailed", { label: t(labelKey) }));
     } finally {
       setBatchBusy(false);
     }
@@ -144,7 +150,7 @@ export default function LibraryPage() {
 
   async function onBatchAddToPlaylist(playlistId: number) {
     if (!playlistId) return;
-    await runBatch((ids) => api.batchAddToPlaylist(ids, playlistId), "加入播放列表");
+    await runBatch((ids) => api.batchAddToPlaylist(ids, playlistId), "library.batchAddPlaylist");
     await loadLibrary();
   }
 
@@ -155,9 +161,9 @@ export default function LibraryPage() {
       const pl = await api.createPlaylist(name);
       setNewPlaylist("");
       setPlaylists((prev) => [pl, ...prev]);
-      setNotice(`已建立播放列表「${pl.name}」，可勾选歌曲后加入`);
+      setNotice(t("library.playlistCreated", { name: pl.name }));
     } catch (e: any) {
-      setError(e?.message || "建立播放列表失败");
+      setError(e?.message || t("library.playlistCreateFailed"));
     }
   }
 
@@ -170,9 +176,9 @@ export default function LibraryPage() {
       setFolderFor(null);
       setFolderName("");
       setFolders(await api.folders());
-      setNotice(`已把《${s.title || "未命名"}》归入「${name}」`);
+      setNotice(t("library.folderAdded", { title: s.title || t("common.unnamed"), name }));
     } catch (e: any) {
-      setError(e?.message || "归入分组失败");
+      setError(e?.message || t("library.folderAddFailed"));
     }
   }
 
@@ -181,9 +187,9 @@ export default function LibraryPage() {
       await api.restoreSong(item.id);
       setTrash((prev) => prev.filter((x) => x.id !== item.id));
       await load(true); // 恢复的歌要回到「我的作品」
-      setNotice(`已恢复《${item.title || "未命名"}》`);
+      setNotice(t("library.restored", { title: item.title || t("common.unnamed") }));
     } catch (e: any) {
-      setError(e?.message || "恢复失败");
+      setError(e?.message || t("library.restoreFailed"));
     }
   }
 
@@ -194,9 +200,9 @@ export default function LibraryPage() {
     try {
       await api.purgeSong(item.id);
       setTrash((prev) => prev.filter((x) => x.id !== item.id));
-      setNotice("已彻底删除（不可恢复）");
+      setNotice(t("library.purged"));
     } catch (e: any) {
-      setError(e?.message || "彻底删除失败");
+      setError(e?.message || t("library.purgeFailed"));
     }
   }
 
@@ -205,7 +211,7 @@ export default function LibraryPage() {
       const updated = await api.updateVisibility(s.id, !s.is_public);
       setSongs((prev) => prev.map((x) => (x.id === s.id ? updated : x)));
     } catch (e: any) {
-      setError(e?.message || "更新失败");
+      setError(e?.message || t("library.updateFailed"));
     }
   }
 
@@ -217,9 +223,9 @@ export default function LibraryPage() {
       await api.deleteSong(s.id);
       // O6：本地移除即可，避免整页 load(true) 重新拉取列表造成的闪烁/重载
       setSongs((prev) => prev.filter((x) => x.id !== s.id));
-      setNotice(`《${s.title || "未命名"}》已移入回收站，30 天内可恢复`);
+      setNotice(t("library.movedToTrash", { title: s.title || t("common.unnamed") }));
     } catch (e: any) {
-      setError(e?.message || "删除失败");
+      setError(e?.message || t("library.deleteFailed"));
     }
   }
 
@@ -356,25 +362,26 @@ export default function LibraryPage() {
     <main className="mx-auto max-w-3xl px-4 py-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-[var(--ink)]">
-          {tab === "songs" ? "我的作品" : "回收站"}
+          {tab === "songs" ? t("library.tabSongs") : t("library.tabTrash")}
         </h1>
         <div className="flex gap-2">
           <button
             onClick={() => setTab("songs")}
             className={`btn btn-sm ${tab === "songs" ? "btn-primary" : "btn-secondary"}`}
           >
-            我的作品
+            {t("library.tabSongs")}
           </button>
           <button
             onClick={() => setTab("trash")}
             className={`btn btn-sm ${tab === "trash" ? "btn-primary" : "btn-secondary"}`}
           >
-            回收站{trash.length > 0 && tab === "trash" ? `（${trash.length}）` : ""}
+            {t("library.tabTrash")}
+            {trash.length > 0 && tab === "trash" ? `（${trash.length}）` : ""}
           </button>
         </div>
       </div>
 
-      {loading && <p className="text-[var(--muted)]">加载中…</p>}
+      {loading && <p className="text-[var(--muted)]">{t("common.loading")}</p>}
       {error && (
         <p className="mb-3 text-sm text-[var(--danger)]" role="alert">
           {error}
@@ -388,7 +395,7 @@ export default function LibraryPage() {
         >
           {notice}
           <button onClick={() => setNotice("")} className="ml-2 text-xs text-[var(--muted)] underline">
-            知道了
+            {t("common.gotIt")}
           </button>
         </p>
       )}
@@ -396,31 +403,43 @@ export default function LibraryPage() {
       {tab === "trash" && (
         <section className="space-y-3">
           <p className="text-sm text-[var(--muted)]">
-            删除的作品会在这里保留 30 天，到期后自动清理。恢复后歌单与收藏原样回来。
+            {t("library.trashHint")}
           </p>
           {trashLoading && <p className="text-[var(--muted)]">加载中…</p>}
           {!trashLoading && trash.length === 0 && (
-            <div className="card p-6 text-center text-[var(--muted)]">回收站是空的。</div>
+            <div className="card p-6 text-center text-[var(--muted)]">
+              {t("library.emptyTrash")}
+            </div>
           )}
-          {trash.map((t) => (
+          {/* 注意：这里把 map 变量命名为 item 而非 t —— t 已是翻译函数。 */}
+          {trash.map((item) => (
             <article
-              key={t.id}
+              key={item.id}
               className="card flex flex-wrap items-center justify-between gap-3 p-4"
-              aria-label={`回收站作品《${t.title || "未命名"}》`}
+              aria-label={t("library.trashItemAria", {
+                title: item.title || t("common.unnamed"),
+              })}
             >
               <div>
-                <p className="font-semibold text-[var(--ink)]">{t.title || "未命名"}</p>
+                <p className="font-semibold text-[var(--ink)]">
+                  {item.title || t("common.unnamed")}
+                </p>
                 <p className="text-xs text-[var(--muted)]">
-                  剩余 {t.days_left ?? 0} 天（保留 {t.keep_days ?? 30} 天）
-                  {t.expires_at ? `，将于 ${t.expires_at.slice(0, 10)} 清理` : ""}
+                  {t("library.trashRemain", {
+                    days: item.days_left ?? 0,
+                    keep: item.keep_days ?? 30,
+                  })}
+                  {item.expires_at
+                    ? t("library.trashExpires", { date: item.expires_at.slice(0, 10) })
+                    : ""}
                 </p>
               </div>
               <div className="flex gap-2">
-                <button onClick={() => onRestore(t)} className="btn btn-secondary btn-sm">
-                  恢复
+                <button onClick={() => onRestore(item)} className="btn btn-secondary btn-sm">
+                  {t("library.restore")}
                 </button>
-                <button onClick={() => setPendingPurge(t)} className="btn btn-danger btn-sm">
-                  彻底删除
+                <button onClick={() => setPendingPurge(item)} className="btn btn-danger btn-sm">
+                  {t("library.purge")}
                 </button>
               </div>
             </article>
@@ -802,7 +821,7 @@ export default function LibraryPage() {
           disabled={loadingMore}
           className="btn btn-secondary mt-4 w-full"
         >
-          {loadingMore ? "加载中…" : "加载更多"}
+          {loadingMore ? t("common.loading") : t("library.loadMore")}
         </button>
       )}
 

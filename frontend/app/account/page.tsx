@@ -12,6 +12,7 @@ import {
   type MyBilling,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useT } from "@/lib/i18n";
 import { QRCodeSVG } from "qrcode.react";
 
 // 네이버페이 JS SDK 를 동적으로 로드.
@@ -34,32 +35,25 @@ function loadNaverSdk(scriptUrl?: string): Promise<any> {
     s.async = true;
     s.onload = () => {
       if ((window as any).NaverPay) resolve((window as any).NaverPay);
-      else reject(new Error("支付组件初始化失败"));
+      else reject(new Error("pay-component-init-failed"));
     };
-    s.onerror = () => reject(new Error("支付组件加载失败（网络或被拦截）"));
+    s.onerror = () => reject(new Error("pay-component-load-failed"));
     document.body.appendChild(s);
   });
 }
 
-// 档位/支付方式/订单状态的中文显示名（UI 全中文规则；key 为内部值，不改动）
-const TIER_CN: Record<string, string> = {
-  free: "免费档", lite: "轻量档", standard: "标准档", sacred: "专业档", enterprise: "机构档",
-};
-const PROVIDER_CN: Record<string, string> = {
-  manual: "人工确认", stripe: "国际卡支付", kakao: "韩国卡支付", naver: "韩国简易支付",
-  wechat: "微信支付", alipay: "支付宝", paypal: "国际钱包",
-};
-const ORDER_STATUS_CN: Record<string, string> = {
-  created: "已创建", pending: "处理中", paid: "已支付", failed: "已失败",
-  expired: "已过期", canceled: "已取消", refunded: "已退款",
-};
-// 币种代码 → 中文（下拉框选项 key 不动）
-const CURRENCY_CN: Record<string, string> = { CNY: "人民币", USD: "美元", KRW: "韩元" };
-const tierCn = (t?: string | null) => (t ? TIER_CN[t] ?? t : "免费档");
-const providerCn = (p?: string | null) => (p ? PROVIDER_CN[p] ?? p : p ?? "");
-const statusCn = (s?: string | null) => (s ? ORDER_STATUS_CN[s] ?? s : s ?? "");
+// 档位/支付方式/订单状态/币种的显示名（GAP-017：改走词典，key 仍为内部值不改动）。
+// 这些是**运行时**按当前语言取值，故用函数 + t 而非静态常量表。
+const tierName = (t: (k: string) => string, key?: string | null) =>
+  key ? t(`tier.${key}`) : t("tier.free");
+const providerName = (t: (k: string) => string, key?: string | null) =>
+  key ? t(`payMethod.${key}`) : "";
+const statusName = (t: (k: string) => string, key?: string | null) =>
+  key ? t(`orderStatus.${key}`) : "";
+const currencyName = (t: (k: string) => string, key: string) => t(`currency.${key}`);
 
 export default function AccountPage() {
+  const t = useT();
   const { isAuthed, email } = useAuth();
   const [data, setData] = useState<MyBilling | null>(null);
   const [sub, setSub] = useState<BillingSubscription | null>(null);
@@ -117,7 +111,7 @@ export default function AccountPage() {
         } else if (attempts >= 40) {
           // 약 2분(3s×40) 내 미도착: 무한 폴링 방지 + 사용자 안내.
           clearPoll();
-          setError("支付结果尚未到账，请稍后刷新账户页查看；若已扣款仍未升级，请联系客服。");
+          setError(t("account.payNotCredited"));
         }
       } catch {
         // 轮询실패는 조용히 재시도(일시적 네트워크 등).
@@ -139,7 +133,7 @@ export default function AccountPage() {
       setNaverParams(null);
       setQr(null);
     } catch (e: any) {
-      setError(e?.message || "支付确认失败");
+      setError(e?.message || t("account.payConfirmFailed"));
     } finally {
       setApproving(false);
     }
@@ -155,7 +149,7 @@ export default function AccountPage() {
     const cleanUrl = () => window.history.replaceState({}, "", window.location.pathname);
 
     if (q.get("canceled") === "1" || q.get("failed") === "1") {
-      setError("支付已取消或失败，请重试。");
+      setError(t("account.payCanceled"));
       cleanUrl();
       return;
     }
@@ -173,8 +167,8 @@ export default function AccountPage() {
         const reason = q.get("resultMessage") || resultCode;
         setError(
           resultCode === "UserCancel"
-            ? "支付已取消，请重试。"
-            : `支付失败（${reason}），请重试`
+            ? t("account.payCanceledRetry")
+            : t("account.payFailed", { reason })
         );
         setNaverParams(null);
         return;
@@ -225,7 +219,7 @@ export default function AccountPage() {
         setProviders(provResp.providers as BillingProvider[]);
       })
       .catch((e: any) => {
-        if (!cancelled) setError(e?.message || "加载失败");
+        if (!cancelled) setError(e?.message || t("common.loadFailed"));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -249,7 +243,7 @@ export default function AccountPage() {
     setNaverParams(null);
     try {
       if (tier === "free") {
-        setError("免费档为默认档，无需支付。请选择轻量档 / 标准档 / 专业档 / 机构档升级。");
+        setError(t("account.freeIsDefault"));
         return;
       }
       // 단일 active provider 가 KRW 전용이면 강제 KRW(다른 통화 선택 시 backend 400).
@@ -286,7 +280,7 @@ export default function AccountPage() {
       //  - stripe/alipay: webhook 형 → 서버 비동기 승격 → 폴링으로 반영.
       window.location.href = co.checkout_url;
     } catch (e: any) {
-      setError(e?.message || "升级失败");
+      setError(e?.message || t("account.upgradeFailed"));
     } finally {
       setUpgrading(false);
     }
@@ -319,7 +313,7 @@ export default function AccountPage() {
         productItems: naverParams.productItems ?? [],
       });
     } catch (e: any) {
-      setError(e?.message || "支付组件异常");
+      setError(e?.message || t("account.payComponentError"));
     } finally {
       setUpgrading(false);
     }
@@ -342,7 +336,7 @@ export default function AccountPage() {
       await api.cancelSubscription();
       await refreshAll();
     } catch (e: any) {
-      setError(e?.message || "取消订阅失败");
+      setError(e?.message || t("account.cancelSubFailed"));
     } finally {
       setUpgrading(false);
     }
@@ -355,7 +349,7 @@ export default function AccountPage() {
       await api.reactivateSubscription();
       await refreshAll();
     } catch (e: any) {
-      setError(e?.message || "恢复订阅失败");
+      setError(e?.message || t("account.resumeSubFailed"));
     } finally {
       setUpgrading(false);
     }
@@ -379,12 +373,13 @@ export default function AccountPage() {
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-10">
-      <h1 className="mb-1 text-2xl font-bold">账户 · 用量与账单</h1>
+      <h1 className="mb-1 text-2xl font-bold">{t("account.titleFull")}</h1>
       <p className="mb-6 text-sm text-[var(--muted)]">
-        {email} · 当前套餐：<span className="text-[var(--ink-soft)]">{tierCn(data?.tier_key)}</span>
+        {email} · {t("account.currentTier")}
+        <span className="text-[var(--ink-soft)]">{tierName(t, data?.tier_key)}</span>
       </p>
 
-      {loading && <p className="text-[var(--muted)]">加载中…</p>}
+      {loading && <p className="text-[var(--muted)]">{t("common.loading")}</p>}
       {error && (
         <p className="text-sm text-[var(--danger)]" role="alert">
           {error}
@@ -397,7 +392,7 @@ export default function AccountPage() {
           {data.daily_quota_limit > 0 && (
             <div className="mb-4 card p-4">
               <div className="mb-1 flex items-center justify-between text-sm">
-                <span className="text-[var(--ink-soft)]">今日生成额度</span>
+                <span className="text-[var(--ink-soft)]">{t("account.todayQuota")}</span>
                 <span className="text-[var(--ink-soft)]">
                   {data.daily_quota_used} / {data.daily_quota_limit}
                 </span>
@@ -416,17 +411,17 @@ export default function AccountPage() {
               </div>
               {data.daily_quota_used >= data.daily_quota_limit && (
                 <p className="mt-2 text-xs text-[var(--danger)]">
-                  今日免费额度已用完，订阅后可继续生成。
+                  {t("account.quotaExhausted")}
                 </p>
               )}
             </div>
           )}
           <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Card label="歌曲总数" value={String(data.total_songs)} />
-            <Card label="总成本" value={fmt(data.total_cost_cny)} />
-            <Card label="总营收(名义)" value={fmt(data.total_revenue_cny)} />
+            <Card label={t("account.totalSongs")} value={String(data.total_songs)} />
+            <Card label={t("account.totalCost")} value={fmt(data.total_cost_cny)} />
+            <Card label={t("account.totalRevenue")} value={fmt(data.total_revenue_cny)} />
             <Card
-              label="总毛利"
+              label={t("account.totalMargin")}
               value={fmt(data.total_margin_cny)}
               danger={data.total_margin_cny < 0}
             />
@@ -434,7 +429,7 @@ export default function AccountPage() {
 
           <div className="mb-8 rounded-xl card p-4">
             <div className="mb-2 flex items-center justify-between text-sm">
-              <span className="text-[var(--ink-soft)]">订阅与支付</span>
+              <span className="text-[var(--ink-soft)]">{t("account.billing")}</span>
               {sub && (
                 <span
                   className={`rounded-full px-2 py-0.5 text-xs ${
@@ -446,40 +441,40 @@ export default function AccountPage() {
                   }`}
                 >
                   {sub.active
-                    ? `已订阅 · ${tierCn(sub.tier_key)}`
+                    ? t("account.subscribed", { tier: tierName(t, sub.tier_key) })
                     : sub.status === "trialing"
-                      ? "试用中"
+                      ? t("account.trialing")
                       : sub.status && ["past_due", "unpaid"].includes(sub.status)
-                        ? `订阅异常（${sub.status}）· 请更新支付方式`
-                        : `未订阅 · ${tierCn(sub.tier_key ?? "free")}`}
+                        ? t("account.subAbnormal", { status: sub.status })
+                        : t("account.notSubscribed", { tier: tierName(t, sub.tier_key ?? "free") })}
                 </span>
               )}
             </div>
             {sub?.current_period_end && (
               <p className="mb-3 text-xs text-[var(--muted)]">
-                当前订阅周期至：{sub.current_period_end}
+                {t("account.periodEnd", { date: sub.current_period_end })}
               </p>
             )}
             {sub?.cancel_at_period_end && (
               <p className="mb-3 text-xs text-[var(--muted)]">
-                已申请取消，当前周期内仍可使用，到期后不再续费。
+                {t("account.cancelAtEnd")}
               </p>
             )}
             {sub?.status && ["past_due", "unpaid"].includes(sub.status) && (
               <p className="mb-3 text-xs text-[var(--danger)]">
-                订阅处于异常状态（{sub.status}）—— 请更新支付方式或重新订阅，否则权益将失效。
+                {t("account.subBadState", { status: sub.status })}
               </p>
             )}
 
             {/* wechat Native QR 플로우 */}
             {qr && (
               <div className="mb-4 flex flex-col items-center gap-3 rounded-lg border-[var(--border)] bg-[var(--surface)] p-4">
-                <p className="text-sm text-[var(--ink-soft)]">请用微信扫描二维码完成支付</p>
+                <p className="text-sm text-[var(--ink-soft)]">{t("account.scanQr")}</p>
                 <div className="rounded-lg bg-white p-3">
                   <QRCodeSVG value={qr.url} size={200} />
                 </div>
                 <p className="text-xs text-[var(--muted)]">
-                  支付成功后本页会自动更新（无需手动刷新）。
+                  {t("account.payAutoUpdate")}
                 </p>
                 <button
                   onClick={() => {
@@ -488,7 +483,7 @@ export default function AccountPage() {
                   }}
                   className="text-xs text-[var(--muted)] underline"
                 >
-                  取消二维码
+                  {t("account.cancelQr")}
                 </button>
               </div>
             )}
@@ -496,16 +491,16 @@ export default function AccountPage() {
             {/* naver SDK handoff 플로우 */}
             {naverParams && (
               <div className="mb-4 flex flex-col items-center gap-3 rounded-lg border-[var(--border)] bg-[var(--surface)] p-4">
-                <p className="text-sm text-[var(--ink-soft)]">点击下方按钮完成支付</p>
+                <p className="text-sm text-[var(--ink-soft)]">{t("account.payNowHint")}</p>
                 <button
                   onClick={openNaver}
                   disabled={upgrading || approving}
                   className="btn btn-primary"
                 >
-                  {upgrading ? "支付窗口打开中…" : "去支付"}
+                  {upgrading ? t("account.payWindowOpening") : t("account.payNow")}
                 </button>
                 <p className="text-xs text-[var(--muted)]">
-                  支付完成后，订阅自动生效。
+                  {t("account.payAutoEffective")}
                 </p>
               </div>
             )}
@@ -516,7 +511,7 @@ export default function AccountPage() {
                   value={tier}
                   onChange={(e) => setTier(e.target.value)}
                   className="input"
-                  aria-label="订阅档位"
+                  aria-label={t("account.tierAria")}
                 >
                   <option value="free">免费档</option>
                   {/* 低档位：绑定 mureka-7.6，成本更低，故价格低于 standard */}
@@ -529,9 +524,9 @@ export default function AccountPage() {
                   value={currency}
                   onChange={(e) => setCurrency(e.target.value)}
                   disabled={!!allowedCurrency}
-                  title={allowedCurrency ? `当前支付方式仅支持 ${CURRENCY_CN[allowedCurrency] ?? allowedCurrency}` : undefined}
+                  title={allowedCurrency ? t("account.currencyLimited", { name: currencyName(t, allowedCurrency) }) : undefined}
                   className="input disabled:opacity-50"
-                  aria-label="支付币种"
+                  aria-label={t("account.currencyAria")}
                 >
                   <option value="CNY">人民币 ¥</option>
                   <option value="USD">美元 $</option>
@@ -539,7 +534,7 @@ export default function AccountPage() {
                 </select>
                 {tier !== "free" && plans.length > 0 && (
                   <span className="text-xs text-[var(--muted)]">
-                    {planPrice(tier, currency) ?? "—"} / 月
+                    {planPrice(tier, currency) ?? "—"} {t("account.perMonth")}
                   </span>
                 )}
                 <button
@@ -547,7 +542,7 @@ export default function AccountPage() {
                   disabled={upgrading || approving}
                   className="btn btn-primary"
                 >
-                  {upgrading ? "处理中…" : "升级 / 切换套餐"}
+                  {upgrading ? t("account.processing") : t("account.upgradeSwitch")}
                 </button>
                 {sub?.active &&
                   (sub.cancel_at_period_end ? (
@@ -581,11 +576,11 @@ export default function AccountPage() {
                     className="flex items-center justify-between text-xs"
                   >
                     <span className="text-[var(--muted)]">
-                      #{o.order_id} · {tierCn(o.tier_key)} · {providerCn(o.provider)}
+                      #{o.order_id} · {tierName(t, o.tier_key)} · {providerName(t, o.provider)}
                     </span>
                     <span className="text-[var(--ink-soft)]">
                       {o.currency === "CNY" ? "¥" : o.currency === "USD" ? "$" : "₩"}
-                      {o.amount.toFixed(2)} · {statusCn(o.status)}
+                      {o.amount.toFixed(2)} · {statusName(t, o.status)}
                     </span>
                   </div>
                 ))}

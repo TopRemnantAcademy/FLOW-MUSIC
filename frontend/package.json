@@ -9,6 +9,9 @@
     "lint": "next lint",
 "test:contract": "node tests/mureka-ui-contract.test.cjs && node tests/gap013-player.test.cjs",
     "typecheck": "tsc --noEmit",
+    "verify:i18n": "node scripts/verify-i18n.mjs",
+    "scan:i18n": "node scripts/scan-hardcoded-i18n.mjs",
+    "verify:apk": "node scripts/build-apk.mjs --api=https://api.anistar.studio",
     "check:release": "node scripts/check-release-notes.mjs --strict",
     "lint:a11y": "eslint . --ext .js,.jsx,.ts,.tsx",
     "test:a11y": "tsx tests/a11y-keyboard.test.tsx"

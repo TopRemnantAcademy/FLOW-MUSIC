@@ -1,6 +1,7 @@
 "use client";
 
 import { useTheme, type ResolvedTheme } from "@/lib/theme";
+import { useT } from "@/lib/i18n";
 
 const ICONS: Record<ResolvedTheme, JSX.Element> = {
   light: (
@@ -16,13 +17,15 @@ const ICONS: Record<ResolvedTheme, JSX.Element> = {
   ),
 };
 
-const LABEL: Record<ResolvedTheme, string> = {
-  light: "亮色",
-  dark: "暗色",
+// 语言相关的标签走词典（GAP-017），图标与主题逻辑不变。
+const LABEL_KEY: Record<ResolvedTheme, string> = {
+  light: "theme.light",
+  dark: "theme.dark",
 };
 
 export default function ThemeToggle() {
   const { theme, resolvedTheme, cycle } = useTheme();
+  const t = useT();
   // theme === "system"（默认，未手动选择）时显示"当前实际呈现"的模式，
   // 这样界面上永远只有亮/暗两种可选状态，不再出现"跟随系统"入口。
   const shown: ResolvedTheme = theme === "system" ? resolvedTheme : theme;
@@ -31,11 +34,11 @@ export default function ThemeToggle() {
       type="button"
       onClick={cycle}
       className="btn btn-ghost btn-sm"
-      title={`主题：${LABEL[shown]}（点击切换）`}
-      aria-label={`主题：${LABEL[shown]}，点击切换`}
+      title={t("theme.title", { label: t(LABEL_KEY[shown]) })}
+      aria-label={t("theme.aria", { label: t(LABEL_KEY[shown]) })}
     >
       {ICONS[shown]}
-      <span className="hidden sm:inline">{LABEL[shown]}</span>
+      <span className="hidden sm:inline">{t(LABEL_KEY[shown])}</span>
     </button>
   );
 }

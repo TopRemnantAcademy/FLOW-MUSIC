@@ -4,22 +4,25 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { api, SongView } from "@/lib/api";
 import Player from "@/components/Player";
+import { useT } from "@/lib/i18n";
 
 const PAGE = 12;
 
 type SortKey = "hot" | "new" | "top";
 
-// 排序口径与 /plaza 对齐（plaza/page.tsx SORTS）；黑白体系下去掉 emoji
-const SORTS: { key: SortKey; label: string }[] = [
-  { key: "hot", label: "热门" },
-  { key: "new", label: "最新" },
-  { key: "top", label: "高分" },
+// 排序口径与 /plaza 对齐（plaza/page.tsx SORTS）；黑白体系下去掉 emoji。
+// labelKey 走词典（GAP-017），与广场页共用 plaza.sort* 词条。
+const SORTS: { key: SortKey; labelKey: string }[] = [
+  { key: "hot", labelKey: "plaza.sortHot" },
+  { key: "new", labelKey: "plaza.sortNew" },
+  { key: "top", labelKey: "plaza.sortTop" },
 ];
 
 /** 首页「其他人的作品」：下拉可见的广场精选流。
  *  复用 /plaza 的数据面（api.plaza）与播放卡片（Player），
  *  视觉上做滚动入场（.reveal + IntersectionObserver stagger）与悬停浮起（.lift）。 */
 export default function HomeFeed() {
+  const t = useT();
   const [sort, setSort] = useState<SortKey>("hot");
   const [tick, setTick] = useState(0); // 手动重试句柄
   const [songs, setSongs] = useState<SongView[]>([]);
@@ -37,7 +40,7 @@ export default function HomeFeed() {
         if (alive) setSongs(d);
       })
       .catch((e: any) => {
-        if (alive) setError(e?.message || "加载失败");
+        if (alive) setError(e?.message || t("common.loadFailed"));
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -81,26 +84,26 @@ export default function HomeFeed() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="enter text-xs font-medium uppercase tracking-[0.2em] text-[var(--muted)]">
-            FLOW广场
+            {t("home.plaza")}
           </p>
           <h2
             id="home-feed-title"
             className="enter enter-delay-1 mt-1 text-2xl font-bold tracking-tight text-[var(--ink)]"
           >
-            其他人的作品
+            {t("home.others")}
           </h2>
         </div>
         <Link
           href="/plaza"
           className="enter enter-delay-2 text-sm text-[var(--muted)] underline-offset-4 transition hover:text-[var(--ink)] hover:underline"
         >
-          进广场听更多 →
+          {t("home.feedMore")}
         </Link>
       </div>
 
       {loading && (
         <p className="sr-only" role="status" aria-live="polite">
-          正在加载广场作品…
+          {t("home.feedLoading")}
         </p>
       )}
 
@@ -114,7 +117,7 @@ export default function HomeFeed() {
             data-on={sort === s.key}
             aria-pressed={sort === s.key}
           >
-            {s.label}
+            {t(s.labelKey)}
           </button>
         ))}
       </div>

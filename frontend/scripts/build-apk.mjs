@@ -192,6 +192,18 @@ restoreAdmin();
 
 if (!fs.existsSync(OUT)) die(`정적 산출물이 없습니다: ${OUT} (output: 'export' 미적용?)`);
 
+// GAP-017: 동적 라우트는 정적 익스포트를 위해 **센티널 파라미터**(`__export__`)로
+// 최소 1개 페이지만 생성한다(Next 는 output:'export' 에서 빈 배열을 거부).
+// 그 센티널 페이지는 실제 id/token 이 아니므로 APK 에 배포되면 안 된다 — 제거한다.
+// (실제 진입은 항상 런타임 id/token 이 붙은 클라이언트 라우팅으로 이뤄진다.)
+for (const p of [
+  path.join(OUT, "share", "__export__"),
+  path.join(OUT, "u", "__export__"),
+  path.join(OUT, "songs", "__export__"),
+]) {
+  if (fs.existsSync(p)) { rmrf(p); console.log("[build-apk] 센티널 페이지 제거: " + path.relative(OUT, p)); }
+}
+
 // 방어적 삭제: 어떤 경로로든 admin 산출물이 생겼다면 제거.
 for (const p of [path.join(OUT, "admin"), path.join(OUT, "admin.html")]) {
   if (fs.existsSync(p)) { rmrf(p); console.log("[build-apk] admin 산출물 추가 제거: " + path.relative(OUT, p)); }
