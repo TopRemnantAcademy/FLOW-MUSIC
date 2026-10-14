@@ -67,7 +67,11 @@ music_rebuild_project/
 │       └── ARCHIVE_NOTE.md           # 废弃原因 替代版本 时间 决策人
 └── tools/                            # 校验工具（无媒体）
     ├── README.md
-    └── checks/                       # check_ascii.sh / verify_hashes.sh / check_ro.sh
+    ├── arrangement/                  # chords.txt 规范化/校验（#50）
+    ├── checks/                       # check_ascii.sh / verify_hashes.sh / check_ro.sh
+    ├── midi/                         # 编曲 MIDI 生成（#52/#53/#54）
+    ├── naming/                       # 命名与冻结规则（#13）
+    └── render/                       # 输出格式工具包（#59）
 ```
 
 > 相比 #12 issue 里给的骨架，保留了 `00~09` 主体，只新增 `tools/`（校验脚本）——ASCII 检查、哈希校验、只读校验得有家，否则规则只停在文档上。
