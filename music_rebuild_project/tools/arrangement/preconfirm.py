@@ -28,7 +28,7 @@
 | `bars` | int | 是 | 全曲总小节数（正整数） |
 | `sections` | list | 否 | 段落列表，`bars` 之和须等于 `bars`（一致校验） |
 | `repeats` | int | 否 | 反复次数；给出时 `bars` 须等于各段落小节和 |
-| `chord_marks` | dict\|list | 否 | 逐小节和弦；键为 1-based 小节号或顺序列表；值可为 `"TBD"` |
+| `chord_marks` | dict\\|list | 否 | 逐小节和弦；键为 1-based 小节号或顺序列表；值可为 `"TBD"` |
 
 ## 退出码语义（与 `tools/render/cli.py` 对齐）
 
