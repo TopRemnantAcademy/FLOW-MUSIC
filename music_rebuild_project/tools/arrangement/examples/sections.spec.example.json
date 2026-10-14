@@ -1,0 +1,14 @@
+{
+  "bpm": 120,
+  "beats_per_bar": 4,
+  "fps": 30,
+  "duration_s": 68.0,
+  "sections": [
+    { "type": "Intro", "bars": 4 },
+    { "type": "Verse", "bars": 8, "label": "Verse 1" },
+    { "type": "Pre-chorus", "bars": 4 },
+    { "type": "Chorus", "bars": 8, "label": "Chorus 1" },
+    { "type": "Bridge", "bars": 4 },
+    { "type": "Outro", "bars": 6 }
+  ]
+}
