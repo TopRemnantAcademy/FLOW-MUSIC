@@ -7,6 +7,11 @@ pydantic-settings==2.5.2
 # CVE-2024-33664(warning, JWT bomb / JWE 解码期资源耗尽)
 # 两者均在 3.4.0 修复; 修复只改算法校验路径, 不触碰 HS256 的 encode/decode 签名。
 python-jose[cryptography]==3.4.0
+# PyJWT 单独声明：backend/tests/test_oauth.py 直接 `import jwt`（PyJWT 提供 `jwt` 模块），
+# 而 python-jose 只提供 `jose` 模块，不提供 `jwt`。干净 `pip install -r requirements.txt`
+# 此前会因 ModuleNotFoundError: No module named 'jwt' 中断 collect。CNB build ② 即因此失败，
+# 已在 build ③ 内联 `pip install PyJWT` 验证修复，此处落地为永久 manifest 修复。
+PyJWT==2.9.0
 cryptography>=42.0.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
