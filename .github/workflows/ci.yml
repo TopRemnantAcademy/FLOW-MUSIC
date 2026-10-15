@@ -44,6 +44,12 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npx tsc --noEmit
+      - name: Lint（真 eslint；此前的 next lint 在 Next 16 下恒绿，#149）
+        run: npm run lint
+      - name: Mock 契约测试（127 断言；防枚举漂移，#149）
+        run: npm run test:contract
+      - name: 可访问性键盘测试（jsdom；包 LocaleProvider 后才不崩，#149）
+        run: npm run test:a11y
       - name: Web build
         run: npx next build
       - name: i18n 自检（词典 key 一致性 / 静态导出可枚举 / locale 持久化接线）
