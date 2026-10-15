@@ -14,6 +14,8 @@
 #   SKIP_CADDY=1                   跳过反向代理（已有 Nginx/Caddy 时）
 #   SKIP_DOCKER_INSTALL=1          跳过 Docker 安装（已装时）
 #   SKIP_FRONTEND_BUILD=1          跳过前端构建（沿用已有 out/）
+#   GOSPEL_API_BASE=...            "联系我们"目标 FLOW 主站（默认 https://anistar.studio）
+#   FLOW_EVENTS_BASE=...           埋点上报基址（默认同 GOSPEL_API_BASE）
 #
 # 幂等性：已存在的 .env / JWT_SECRET **不会被覆盖**；重复执行等于"更新并重启"。
 # ─────────────────────────────────────────────────────────────────────────────
@@ -27,6 +29,8 @@ MUREKA_API_KEY="${MUREKA_API_KEY:-}"
 SKIP_CADDY="${SKIP_CADDY:-0}"
 SKIP_DOCKER_INSTALL="${SKIP_DOCKER_INSTALL:-0}"
 SKIP_FRONTEND_BUILD="${SKIP_FRONTEND_BUILD:-0}"
+GOSPEL_API_BASE="${GOSPEL_API_BASE:-}"
+FLOW_EVENTS_BASE="${FLOW_EVENTS_BASE:-}"
 
 RED='\033[0;31m'; GRN='\033[0;32m'; YLW='\033[1;33m'; NC='\033[0m'
 info() { echo -e "${GRN}[INFO]${NC} $*"; }
@@ -273,6 +277,20 @@ echo
 FRONTEND_OUT="$APP_DIR/frontend/out"
 FRONTEND_SRC="$APP_DIR/frontend"
 FE_API_BASE="https://$MUSIC_DOMAIN"
+
+# ── 构建期常量（NEXT_PUBLIC_*）一览 ──────────────────────────────────────────
+# 这三个值都是**构建期内联**进客户端包的（lib/api.ts / lib/eventReporter.ts），
+# 运行期改 .env 无效 —— 必须在这里传入，否则前端会走源码里的 fallback：
+#   · NEXT_PUBLIC_API_BASE          → http://localhost:8000（连不上）
+#   · NEXT_PUBLIC_GOSPEL_API_BASE   → https://anistar.studio（写死在源码的"联系我们"目标）
+#   · NEXT_PUBLIC_FLOW_EVENTS_BASE  → http://localhost:8000（埋点**静默丢失**，无任何报错）
+# 2026-10-15 P1-3：Web 部署路径原先只注入 API_BASE，后两者从未注入 → 见 issue #155。
+FE_GOSPEL_API_BASE="${GOSPEL_API_BASE:-https://anistar.studio}"
+FE_EVENTS_API_BASE="${FLOW_EVENTS_BASE:-$FE_GOSPEL_API_BASE}"
+
+# 戳记必须覆盖**全部**构建期常量：只戳 API_BASE 时，改了 GOSPEL/EVENTS 却因
+# "域名未变"跳过重建 → 旧产物继续打旧地址，症状极难查（与 ③ 同源陷阱）。
+FE_STAMP_VALUE="$FE_API_BASE|$FE_GOSPEL_API_BASE|$FE_EVENTS_API_BASE"
 FE_STAMP="$FRONTEND_OUT/.build-stamp"
 
 # 是否需要重建。三条判据命中任一即重建：
@@ -283,11 +301,43 @@ FE_STAMP="$FRONTEND_OUT/.build-stamp"
 # 否则跳过 —— 每次 bootstrap 都重跑 npm ci 会让"更新重启"从 10 秒变成 5 分钟。
 frontend_needs_build() {
   [ -f "$FRONTEND_OUT/index.html" ] || return 0
-  [ "$(cat "$FE_STAMP" 2>/dev/null)" = "$FE_API_BASE" ] || return 0
+  [ "$(cat "$FE_STAMP" 2>/dev/null)" = "$FE_STAMP_VALUE" ] || return 0
   [ -n "$(find "$FRONTEND_SRC" \
             \( -name node_modules -o -name out -o -name .next -o -name .git \) -prune -o \
             -type f -newer "$FRONTEND_OUT/index.html" -print 2>/dev/null | head -1)" ] && return 0
   return 1
+}
+
+# 校验构建期常量：空值 / loopback / 非 HTTPS 一律失败（**不静默兜底**）。
+# 为什么主机侧也校验：容器内校验失败只会得到一句 npm/next 的报错，看不出"是配置缺了"。
+# 这里失败信息直指变量名与修法。规则与 frontend/scripts/public-consts.mjs 保持一致。
+validate_public_consts() {
+  local bad=0 v
+  for pair in "NEXT_PUBLIC_API_BASE=$FE_API_BASE" \
+              "NEXT_PUBLIC_GOSPEL_API_BASE=$FE_GOSPEL_API_BASE" \
+              "NEXT_PUBLIC_FLOW_EVENTS_BASE=$FE_EVENTS_API_BASE"; do
+    v="${pair#*=}"
+    if [ -z "$v" ]; then
+      warn "构建期常量 ${pair%%=*} 为空"
+      bad=1
+    elif ! printf '%s' "$v" | grep -qE '^https://'; then
+      warn "构建期常量 ${pair%%=*} 必须是 https:// URL（当前 '$v'）"
+      bad=1
+    elif printf '%s' "$v" | grep -qE '^https://(127\.0\.0\.1|localhost|0\.0\.0\.0)([:/]|$)'; then
+      warn "构建期常量 ${pair%%=*} 指向 loopback（'$v'）—— 上线后 100% 连不上"
+      bad=1
+    fi
+  done
+  if [ "$bad" -ne 0 ]; then
+    die "构建期常量校验失败（NEXT_PUBLIC_* 会内联进客户端包，运行期不可改）。
+      请设置后重跑：
+        export MUSIC_DOMAIN=music.example.com
+        export GOSPEL_API_BASE=https://anistar.studio   # 联系我们/埋点目标 FLOW 主站
+        export FLOW_EVENTS_BASE=https://anistar.studio  # 不填则默认同 GOSPEL_API_BASE
+      仅在**已手工放置产物**时可用 SKIP_FRONTEND_BUILD=1 跳过。"
+  fi
+  info "构建期常量：API=$FE_API_BASE  GOSPEL=$FE_GOSPEL_API_BASE  EVENTS=$FE_EVENTS_API_BASE"
+  return 0
 }
 
 build_frontend() {
@@ -299,34 +349,53 @@ build_frontend() {
     info "前端产物已是最新（源码未变、域名未变）—— 跳过重建"
     return 0
   fi
+  # 构建期常量 fail-fast（抄 build-apk.mjs 做法）：缺值/loopback/非 HTTPS 直接中止，
+  # 宁可"部署失败"也不要"上线后静默打错地址"。校验逻辑与 APK 共用 scripts/public-consts.mjs。
+  # 注：build-web.mjs 内部还会再校验一次（容器内），这里是主机侧更早的护栏。
+  validate_public_consts || return 1
   info "构建前端静态站点（node:20-alpine 内 npm ci + export，约 3~5 分钟）..."
-  # ⚠ NEXT_PUBLIC_API_BASE 是**构建期内联**进客户端包的（lib/api.ts:2），
-  #   运行期改 .env 无效 —— 必须在这里传入，否则前端会去连 http://localhost:8000。
+  # ⚠ 三个 NEXT_PUBLIC_* 都是**构建期内联**进客户端包的，运行期改 .env 无效。
+  #   走 scripts/build-web.mjs：内含 fail-fast + CSP<meta> 注入 + 产物自检
+  #   （静态导出下 next.config.js 的 headers() 不生效，CSP 只能靠 <meta> 补）。
   docker run --rm \
     -v "$FRONTEND_SRC:/app" -w /app \
-    -e APK_BUILD=1 \
-    -e "NEXT_PUBLIC_API_BASE=$FE_API_BASE" \
+    -e NEXT_PUBLIC_API_BASE="$FE_API_BASE" \
+    -e NEXT_PUBLIC_GOSPEL_API_BASE="$FE_GOSPEL_API_BASE" \
+    -e NEXT_PUBLIC_FLOW_EVENTS_BASE="$FE_EVENTS_API_BASE" \
     -e NEXT_TELEMETRY_DISABLED=1 \
     node:20-alpine \
-    sh -c "npm ci --no-audit --no-fund && npm run build" \
+    sh -c "npm ci --no-audit --no-fund && node scripts/build-web.mjs" \
     || return 1
-  echo "$FE_API_BASE" > "$FE_STAMP" 2>/dev/null || true
+  echo "$FE_STAMP_VALUE" > "$FE_STAMP" 2>/dev/null || true
   return 0
 }
 
 if build_frontend; then
   info "前端构建完成"
 else
-  warn "前端构建失败（网络/依赖问题？）。可重试：
-        docker run --rm -v $APP_DIR/frontend:/app -w /app -e APK_BUILD=1 \\
-          -e NEXT_PUBLIC_API_BASE=https://$MUSIC_DOMAIN node:20-alpine \\
-          sh -c 'npm ci --no-audit --no-fund && npm run build'"
+  warn "前端构建失败（配置缺失 / 网络 / 依赖问题？）。可重试：
+        docker run --rm -v $APP_DIR/frontend:/app -w /app \\
+          -e NEXT_PUBLIC_API_BASE=https://$MUSIC_DOMAIN \\
+          -e NEXT_PUBLIC_GOSPEL_API_BASE=$FE_GOSPEL_API_BASE \\
+          -e NEXT_PUBLIC_FLOW_EVENTS_BASE=$FE_EVENTS_API_BASE \\
+          node:20-alpine \\
+          sh -c 'npm ci --no-audit --no-fund && node scripts/build-web.mjs'"
 fi
 
 # 硬校验：没有界面就等于部署不可用，明确失败而不是"能起来但打不开"
 if [ ! -f "$FRONTEND_OUT/index.html" ]; then
   die "缺少前端产物 $FRONTEND_OUT/index.html —— 站点将无界面。
       （若已手工放置产物，用 SKIP_FRONTEND_BUILD=1 重跑）"
+fi
+# 产物必须与**本次**构建期常量一致。否则：构建失败但旧 out/ 还在 → 上面那条
+# index.html 检查会通过 → 站点带着**旧地址/旧 CSP** 上线（静默错误，最难查）。
+# （SKIP_FRONTEND_BUILD=1 手工放置产物时豁免——那是运维显式承担的场景。）
+if [ "$SKIP_FRONTEND_BUILD" != "1" ] && \
+   [ "$(cat "$FE_STAMP" 2>/dev/null)" != "$FE_STAMP_VALUE" ]; then
+  die "前端产物戳记与本次构建期常量不一致：站点可能打向旧地址。
+      expect=$FE_STAMP_VALUE
+      actual=$(cat "$FE_STAMP" 2>/dev/null || echo '<无>')
+      多为上一次构建失败后遗留的旧产物。请排查构建日志后重跑。"
 fi
 info "前端产物就绪：$FRONTEND_OUT"
 

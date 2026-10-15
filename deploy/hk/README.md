@@ -49,6 +49,8 @@ sudo -E bash deploy/hk/bootstrap.sh
 | `SKIP_DOCKER_INSTALL=1` | 已装 Docker 时跳过安装 |
 | `SKIP_CADDY=1` | 已有自己的反代时跳过 Caddy |
 | `SKIP_FRONTEND_BUILD=1` | 沿用已有 `frontend/out/`（**产物缺失时会中止**，避免“能起来但打不开”） |
+| `GOSPEL_API_BASE=https://...` | 「联系我们」目标 FLOW 主站（默认 `https://anistar.studio`） |
+| `FLOW_EVENTS_BASE=https://...` | 埋点上报基址（不填则默认同 `GOSPEL_API_BASE`） |
 | `APP_DIR=/opt/flow` | 部署目录 |
 
 ### 前端是怎么部署的（重要）
@@ -62,9 +64,21 @@ sudo -E bash deploy/hk/bootstrap.sh
 | `/api/*`、`/health`、`/docs`、`/openapi.json` | `127.0.0.1:8000`（backend） |
 | 其余 | `frontend/out/`（静态文件） |
 
-⚠ `NEXT_PUBLIC_API_BASE` 是**构建期内联**进客户端包的（`frontend/lib/api.ts:2`），
-bootstrap 会自动注入 `https://$MUSIC_DOMAIN`；换域名必须**重新构建前端**
-（改 `.env` 无效）。重跑 bootstrap 即可。
+⚠ 前端有**三个构建期常量**（都是 `NEXT_PUBLIC_*`，**构建时内联进客户端包**，
+运行期改 `.env` 无效；换值必须重新构建前端，重跑 bootstrap 即可）：
+
+| 常量 | 用途 | bootstrap 注入值 |
+|---|---|---|
+| `NEXT_PUBLIC_API_BASE` | 音乐后端 API | `https://$MUSIC_DOMAIN` |
+| `NEXT_PUBLIC_GOSPEL_API_BASE` | 「联系我们」目标 FLOW 主站（`/support/tickets`） | `$GOSPEL_API_BASE`，默认 `https://anistar.studio` |
+| `NEXT_PUBLIC_FLOW_EVENTS_BASE` | 埋点上报（`/mobile/events/batch`） | `$FLOW_EVENTS_BASE`，默认同 `GOSPEL_API_BASE` |
+
+- 三者**任一缺失/非 HTTPS/指向 loopback** → 构建前直接 `die`（fail-fast），
+  不会静默兜底到源码里的 `localhost:8000` / `anistar.studio`。
+- 需要改「联系我们」/埋点目标域时：`export GOSPEL_API_BASE=https://... ` 后重跑。
+- 静态导出下 `next.config.js` 的 `headers()` **不生效**，CSP 由
+  `frontend/scripts/build-web.mjs` 以 `<meta http-equiv>` 注入，`connect-src` 自动带上
+  上述三个域（否则跨域 fetch 会被**静默拦截**）。产物落 `frontend/out/web-build-manifest.json`。
 
 ---
 
@@ -78,7 +92,7 @@ bootstrap 会自动注入 `https://$MUSIC_DOMAIN`；换域名必须**重新构�
 | `backup.sh` | SQLite **在线**一致性备份（backup API，无需停机）+ 备份后完整性自检 + 过期清理 |
 | `restore.sh` | `backup.sh` 的逆操作：停服 → 原子替换 → 起服；恢复前先备份当前库、恢复前校验待恢复文件完整性 |
 | `crontab.example` | 备份 / 镜像清理 / 出口定时探测 |
-| `selftest.sh` | bootstrap 的 **mock 自检**（不装 Docker/不联网）：8 组用例 / 38 项断言 |
+| `selftest.sh` | bootstrap 的 **mock 自检**（不装 Docker/不联网）：9 组用例 / 53 项断言（含构建期常量 fail-fast） |
 | `sync-code.sh` | **代码同步**：`rsync --delete` 镜像语义（无 rsync 则退化），同步后按 `git ls-tree` 自检多了/少了，差异即非零退出；支持 `--dry-run` |
 | `schema-cutover.sh` | **PG schema 切换**（对齐 live 镜像模型）：计划+确认 → 代码同步提示 / 镜像重建 → 闸门 → 备份 → 停应用 → `DROP SCHEMA` → `alembic upgrade head` → 起应用 → 校验；`users`/`songs` 非空时默认拒绝，需 `--force`；支持 `--dry-run` / `--yes` |
 | `backups/` | 脚本目录下的备份目录；`schema-cutover.sh` 默认落到 **`/opt/flow/backups`**（与 live 存量备份同处），可用 `BACKUP_DIR` 覆盖 |

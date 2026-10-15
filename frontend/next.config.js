@@ -18,10 +18,16 @@ const nextConfig = {
   //    APK 경로는 scripts/build-apk.mjs 가 동일 정책을 <meta http-equiv> 로 주입해 보완한다.
   async headers() {
     const apiBase = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+    // 교차 출처 fetch 대상(문의=FLOW 主站 / 埋点)도 connect-src 에 넣어야 한다.
+    // 빠지면 CSP 가 **조용히 차단** → 기능이 죽은 채 원인 불명(콘솔만 에러).
+    const connectOrigins = [
+      process.env.NEXT_PUBLIC_GOSPEL_API_BASE,
+      process.env.NEXT_PUBLIC_FLOW_EVENTS_BASE,
+    ].filter(Boolean);
     return [
       {
         source: "/:path*",
-        headers: securityHeaders(apiBase),
+        headers: securityHeaders(apiBase, connectOrigins),
       },
     ];
   },
