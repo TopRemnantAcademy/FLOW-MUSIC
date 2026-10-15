@@ -17,24 +17,52 @@
 
 > 授权后可交由本地 agent 代装开源项（Audiveris/MuseScore）；GUI/付费/试用项保留用户手动（SOUL 边界：对外动作谨慎）。
 
-## B. MCP 自动化类（#23–#26）— ACE MCP server 已就绪
+## B. MCP 自动化类（#23–#26）— ACE MCP server 已就绪且**已实测连通**
 
-`ace-mcp-server.exe` 已存在于 `C:\Program Files\ACE Studio\`。项目级注册（CodeBuddy CLI `mcp.json` 示例）：
+`ace-mcp-server.exe` 已存在于 `C:\Program Files\ACE Studio\`（12,417,880 B）。
+
+### B.0 已落地（2026-10-16 实测，非预案）
+
+| 动作 | 结果 |
+|---|---|
+| stdio 握手实测 | `initialize` → `serverInfo = ACE Studio MCP / 0.17.0 / Remote Control Bridge Surface 17.1`，`protocolVersion = 2024-11-05` |
+| `tools/list` | **63 个工具**（`audio_plugin_read` … `transport_edit`，命名 `<group>_read` / `<group>_edit`） |
+| 项目级注册 | 仓库根 `.mcp.json` 已建，server 名 **`ace-studio`** |
+| 客户端识别 | `claude mcp list` → `ace-studio: … ⏸ Pending approval`（配置已读到，剩一次性人工批准） |
+| 官方 agent skills | 上游 `github.com/BeatMagic/acestudio_agent_plugin` @ `ca4bab8` 已下载到 `00_docs/ace_skills/`（**下载而非手写**） |
+
+一键复测（纯 stdlib，退出码 0=PASS / 1=FAIL / 2=用法错）：
+
+```
+python tools/checks/probe_ace_mcp.py            # 默认探测 ACE MCP
+python tools/checks/probe_ace_mcp.py --json     # 机器可读（含 stderr 前 2000 字符）
+```
+
+### B.1 注册配置（与仓库根 `.mcp.json` 一致）
 
 ```json
-{ "mcpServers": { "ace": {
-  "command": "C:\\Program Files\\ACE Studio\\ace-mcp-server.exe",
+{ "mcpServers": { "ace-studio": {
+  "type": "stdio",
+  "command": "C:/Program Files/ACE Studio/ace-mcp-server.exe",
   "args": [],
   "env": {}
 } } }
 ```
 
-- #23 注册：把上面块写入项目 `mcp.json`（或 CodeBuddy CLI 配置）。
-- #24 验证：ACE Studio 打开项目后，列出工具（只读查询）。
+> ⚠ 修正：server 名统一为 **`ace-studio`**（本文档旧版写的 `ace` 已作废）。
+> ⚠ 修正：`%LOCALAPPDATA%/Programs/CodeBuddy CN/bin/buddycn`（v1.106.1）是 **IDE 启动器**，
+> 不是 agent CLI，它**没有** `mcp` 子命令（`--scope` 会被透传给 Electron 并告警）。
+> 因此 #23 走「项目级 `.mcp.json`」路径，与 issue 所述 GUI 写入等价。
+
+- #23 注册：**已完成**（`.mcp.json` + skills 下载）；剩客户端一次性批准动作。
+- #24 验证：ACE Studio 打开项目后，用 `probe_ace_mcp.py` 复测 + 客户端内只读查询。
 - #25 只读试点：先只读查项目一致性，禁改源/批准本（`automation_safety_rules.md`）。
 - #26 副本小改 + 撤销：在 `pilot_copy/` 上试点，验证可撤销。
 
-> 需 ACE Studio **保持打开对应项目**；MCP 连接验证这一步无法无头完成，须用户在场。
+> 需 ACE Studio **主程序保持运行并打开对应项目**。当前 `acestudio-cli --version` 报
+> `ACE Studio is not reachable from here.` —— 即主程序未启动；**这不是 MCP 故障**
+> （server 二进制握手 PASS）。故障速查见 `../01_preflight/issue_log/triage_cheatsheet.md`，
+> 个案记录见 `../01_preflight/issue_log/env_2026-10-16_ace-mcp-registration.md`。
 
 ## C. OMR→谱面→声乐管线（#29–#47）— 需真实谱面输入
 

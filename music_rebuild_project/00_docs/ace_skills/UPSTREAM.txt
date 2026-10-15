@@ -1,0 +1,4 @@
+source: https://github.com/BeatMagic/acestudio_agent_plugin
+commit: ca4bab84bd4ffae7e776d91204d7b89f91cc4f82
+vendored_at: 2026-10-16
+note: upstream 官方 ACE Studio agent skills，随 ace-studio MCP(0.17.0) 配套；勿本地改写。

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "ace-studio": {
+      "type": "stdio",
+      "command": "C:/Program Files/ACE Studio/ace-mcp-server.exe",
+      "args": [],
+      "env": {}
+    }
+  }
+}
