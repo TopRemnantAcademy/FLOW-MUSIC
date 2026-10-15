@@ -338,3 +338,85 @@ def test_create_accepts_subscriber_lossless_preference(client):
         assert db.get(Song, sid).audio_format == "flac"
     finally:
         db.close()
+
+
+# ---------- 9. #152 声明与下载同口径：available_formats ⊆ 可下载 ----------
+def test_available_formats_follows_full_audio_url_fallback(client, monkeypatch):
+    """#152：mp3 的可用性由 `full_audio_url` 决定，而不是「audio_url 列非空」。
+
+    上游链接 30 天会过期，`full_audio_url` 才是「此刻拿得到」的唯一口径；
+    两处各写一份 fallback → 前端渲染出选项、点下去 409（本 issue 的场景）。
+    这里把 `full_audio_url` 打桩成「CDN 挂了」→ 必须自动从下拉框移除 mp3。
+    """
+    from app.routers import songs
+
+    email = "fmt-152@test.com"
+    h = _register(client, email)
+    db = SessionLocal()
+    try:
+        song = _mk_song(db, _uid(db, email), title="152", audio_url="https://cdn.test/a.mp3")
+        sid = song.id
+    finally:
+        db.close()
+
+    assert client.get(f"/api/songs/{sid}", headers=h).json()["available_formats"] == ["mp3"]
+
+    # CDN 失效 + 上游链也拿不到（如已过期被清理）→ 声明里不能再出现 mp3
+    monkeypatch.setattr(songs, "full_audio_url", lambda s, **kw: "")
+    body = client.get(f"/api/songs/{sid}", headers=h).json()
+    assert body["available_formats"] == []
+    # 声明与下载一致：此时下载也必须是 409（而不是「列表里没有却还下得到」）
+    _subscribe(client, h)
+    monkeypatch.setattr("app.storage.s3.download_to_temp", lambda url, **kw: "/tmp/x.mp3")
+    r = client.get(f"/api/songs/{sid}/download?format=mp3", headers=h)
+    assert r.status_code == 409, r.text
+
+
+def test_every_available_format_is_downloadable_152(client, monkeypatch, tmp_path):
+    """#152 的核心不变量：**列出的每个格式都真的下得到**（逐格式走一遍下载端点）。"""
+    email = "fmt-152b@test.com"
+    h = _register(client, email)
+    _subscribe(client, h)
+    db = SessionLocal()
+    try:
+        song = _mk_song(
+            db,
+            _uid(db, email),
+            title="全格式",
+            audio_url="https://cdn.test/a.mp3",
+            audio_wav_url="https://cdn.test/a.wav",
+            audio_flac_url="https://cdn.test/a.flac",
+        )
+        sid = song.id
+    finally:
+        db.close()
+
+    listed = client.get(f"/api/songs/{sid}", headers=h).json()["available_formats"]
+    assert listed == ["mp3", "wav", "flac"]
+    monkeypatch.setattr(
+        "app.storage.s3.download_to_temp", lambda url, **kw: str(tmp_path / "o.bin")
+    )
+    (tmp_path / "o.bin").write_bytes(b"\x00")
+    for fmt in listed:
+        r = client.get(f"/api/songs/{sid}/download?format={fmt}", headers=h)
+        assert r.status_code == 200, f"{fmt} 声明可用却下不到：{r.status_code} {r.text}"
+
+
+def test_available_formats_uses_cdn_when_present_152(client, monkeypatch):
+    """有 CDN 链接时 mp3 仍可用（口径切换不能把正常曲目误判成不可下载）。"""
+    from app.routers import songs
+
+    email = "fmt-152c@test.com"
+    h = _register(client, email)
+    db = SessionLocal()
+    try:
+        song = _mk_song(db, _uid(db, email), title="cdn", audio_url="")
+        song.audio_cdn_url = "https://bucket.test/songs/x/y.mp3"
+        db.commit()
+        sid = song.id
+    finally:
+        db.close()
+
+    assert client.get(f"/api/songs/{sid}", headers=h).json()["available_formats"] == ["mp3"]
+    # wav 缺失 → 仍不列出（不因 mp3 走 CDN 就放宽无损的判据）
+    assert songs._download_source(object(), "mp3") == ""
