@@ -1,14 +1,15 @@
 tool,version,source,checksum,installed_at,verified_by
-ACE Studio,installed (version TBD),C:\Program Files\ACE Studio,,2026-10-15,local-agent (ACE Studio.exe present)
-ACE MCP server,present (ace-mcp-server.exe),C:\Program Files\ACE Studio\ace-mcp-server.exe,,2026-10-15,local-agent
+ACE Studio,2.1.8,C:\Program Files\ACE Studio,,2026-10-16,local-agent (acestudio-cli --version: Built for ACE Studio 2.1.8)
+ACE MCP server,0.17.0 (Remote Control Bridge Surface 17.1),C:\Program Files\ACE Studio\ace-mcp-server.exe,,2026-10-16,local-agent (stdio initialize 握手实测; tools/list = 63)
 WorkBuddy,host runtime,running in-session,,2026-10-15,local-agent
 cnb CLI,1.16.35,workbuddy binaries,,2026-10-15,local-agent (cnb --version)
 Node.js,v22.22.2,workbuddy managed,,2026-10-15,local-agent
 Java (Audiveris prereq),17.0.20 Microsoft LTS,system,,2026-10-15,local-agent (java -version)
+OS,Microsoft Windows NT 10.0.26200.0 / Snapdragon X Elite X1E78100 (ARM64),system,,2026-10-16,local-agent (Get-CimInstance Win32_Processor)
 Audiveris,pending - Java17 ready,,2026-10-15,local-agent (未安装; 见 07_unblock_runbook)
 MuseScore Studio,pending,,2026-10-15,local-agent (未安装)
 Synthesizer V Studio 2 Pro,pending,,2026-10-15,local-agent (未安装)
 REAPER,pending,,2026-10-15,local-agent (未安装)
 MT Power Drum Kit 2,pending,,2026-10-15,local-agent (未安装)
 BBC SO Discover,pending,,2026-10-15,local-agent (未安装)
-CodeBuddy CLI,pending - cnb 1.16.35 on PATH,,2026-10-15,local-agent (codebuddy 未在 PATH)
+CodeBuddy CLI (@tencent-ai/codebuddy-code),2.168.0,npm (bins: codebuddy / cbc / codebuddy-code),,2026-10-16,local-agent (codebuddy --version → 2.168.0; 注意 buddycn 1.106.1 是 IDE 启动器非 CLI)

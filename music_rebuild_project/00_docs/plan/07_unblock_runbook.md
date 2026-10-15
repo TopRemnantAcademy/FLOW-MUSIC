@@ -8,7 +8,7 @@
 
 | Issue | 工具 | 解锁命令 / 动作 |
 |---|---|---|
-| #15 | WorkBuddy / CodeBuddy CLI | WorkBuddy 已在运行（宿主）。CodeBuddy CLI：`npm i -g @codebuddy/cli`（若包名不符以官方为准） |
+| #15 | WorkBuddy / CodeBuddy CLI | **已解决**：WorkBuddy 即宿主；CodeBuddy CLI = npm 包 **`@tencent-ai/codebuddy-code`** v2.168.0（`@codebuddy/cli` 在 npm 上 404，不存在）。已装到 `%USERPROFILE%/node_modules`（bins `codebuddy` / `cbc` / `codebuddy-code`）。要进 PATH 用 `npm i -g @tencent-ai/codebuddy-code` |
 | #17 | Audiveris | Java17 已就绪。下载 Audiveris 稳定版 → 解压 → `java -jar audiveris.jar <score>`（桌面/CLI 均可） |
 | #18 | MuseScore Studio | 官网稳定版安装；CLI 模式 `musescore -o out.musicxml in.mscz`（无头转换） |
 | #19 | Synthesizer V 2 Pro | 官网 14 天试用 + 韩语声库 |
@@ -52,10 +52,14 @@ python tools/checks/probe_ace_mcp.py --json     # 机器可读（含 stderr 前 
 > ⚠ 修正：server 名统一为 **`ace-studio`**（本文档旧版写的 `ace` 已作废）。
 > ⚠ 修正：`%LOCALAPPDATA%/Programs/CodeBuddy CN/bin/buddycn`（v1.106.1）是 **IDE 启动器**，
 > 不是 agent CLI，它**没有** `mcp` 子命令（`--scope` 会被透传给 Electron 并告警）。
-> 因此 #23 走「项目级 `.mcp.json`」路径，与 issue 所述 GUI 写入等价。
+> 真正的 CLI 是 `@tencent-ai/codebuddy-code` v2.168.0，其 `mcp` 子命令支持
+> `add / remove / list / get / add-json`，且 **`-s, --scope local|project|user`** —— issue #23 的语法是对的。
+> 当前本机跑 `codebuddy mcp add/list` 会报 `Error: listen EADDRINUSE: address already in use 127.0.0.1:63752`
+> （端口被 PID 21288 的既有实例占用，属运行时端口冲突，不是配置问题）。
+> 因项目级 scope 写入的就是 `.mcp.json`，等价手工写入该文件（已完成）。
 
 - #23 注册：**已完成**（`.mcp.json` + skills 下载）；剩客户端一次性批准动作。
-- #24 验证：ACE Studio 打开项目后，用 `probe_ace_mcp.py` 复测 + 客户端内只读查询。
+- #24 验证：**已完成** —— `tools/checks/probe_ace_mcp.py` 实测握手 PASS + `tools/list` 63 个工具。
 - #25 只读试点：先只读查项目一致性，禁改源/批准本（`automation_safety_rules.md`）。
 - #26 副本小改 + 撤销：在 `pilot_copy/` 上试点，验证可撤销。
 
