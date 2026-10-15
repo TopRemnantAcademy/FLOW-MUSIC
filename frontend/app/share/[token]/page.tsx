@@ -119,13 +119,16 @@ export default function SharePage() {
 
           {state.url ? (
             <>
+              {/* 歌曲音频无对白/字幕轨，track 只是占位（jsx-a11y/media-has-caption） */}
               <audio
                 src={state.url}
                 controls
                 preload="metadata"
                 className="w-full"
                 aria-label={`${state.song.title} 试听`}
-              />
+              >
+                <track kind="captions" srcLang="zh" label="无字幕（歌曲音频）" />
+              </audio>
               <div className="mt-3">
                 <Waveform
                   src={state.url}

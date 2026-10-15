@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
 "test:contract": "node tests/mureka-ui-contract.test.cjs && node tests/gap013-player.test.cjs",
     "typecheck": "tsc --noEmit",
     "verify:i18n": "node scripts/verify-i18n.mjs",

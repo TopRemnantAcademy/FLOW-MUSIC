@@ -149,8 +149,15 @@ export default function AdminFinancePage() {
       <div className="card space-y-3 p-4">
         <div className="text-sm font-medium text-[var(--ink)]">导出（CSV，Excel 可直接打开）</div>
         <div className="flex flex-wrap items-center gap-2">
-          <label className="text-xs text-[var(--muted)]">订单状态</label>
-          <select value={status} onChange={(e) => setStatus(e.target.value)} className="input w-auto text-sm">
+          <label htmlFor="settlement-status" className="text-xs text-[var(--muted)]">
+            订单状态
+          </label>
+          <select
+            id="settlement-status"
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className="input w-auto text-sm"
+          >
             {STATUSES.map((s) => (
               <option key={s} value={s}>
                 {s || "全部"}
