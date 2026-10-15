@@ -43,6 +43,7 @@ const OUT = path.join(FRONTEND, "out");
 // security-headers.js 는 CJS → 정책 문자열 단일 진실 공급원 재사용.
 const require = createRequire(import.meta.url);
 const { metaEquivalent } = require("../security-headers.js");
+const { resolvePublicConsts, connectOriginsFrom } = await import("./public-consts.mjs");
 
 function die(msg) {
   console.error("[build-apk] ❌ " + msg);
@@ -131,6 +132,9 @@ if (parsed.protocol !== "https:" && !process.argv.includes("--allow-insecure-htt
 }
 console.log("[build-apk] API = " + apiBase + (musicHost ? "  (web host: " + musicHost + ")" : ""));
 
+// 공개 상수 해석(APK target). API 는 위에서 이미 검증했고, 나머지는 기본값 허용.
+const publicConsts = resolvePublicConsts({ ...process.env, NEXT_PUBLIC_API_BASE: apiBase }, { target: "apk" });
+
 // ── 1. app/admin 격리 (빌드에서 완전 배제) ──────────────────────────────────
 // 이전 실행이 비정상 종료해 보관소가 남아있으면 먼저 복구(유실 방지).
 if (fs.existsSync(STASH_ADMIN) && !fs.existsSync(ADMIN_DIR)) {
@@ -181,9 +185,12 @@ const build = spawnSync(process.execPath, [nextBin, "build"], {
     APK_BUILD: "1",
     NEXT_PUBLIC_APK_BUILD: "1", // account 페이지의 /admin 진입점 데드코드 제거
     NEXT_PUBLIC_API_BASE: apiBase,
-    // 2026-10-04: 询单写入 FLOW 主站 support_ticket. 未设置时 lib/api.ts 가
-    // https://anistar.studio 로 기본값을 쓰므로 빌드는 계속 성공한다(치명적이지 않음).
-    NEXT_PUBLIC_GOSPEL_API_BASE: process.env.NEXT_PUBLIC_GOSPEL_API_BASE || "https://anistar.studio",
+    // 문의(FLOW 主站 /support/tickets) + 埋点(/mobile/events/batch).
+    // APK 는 기본값 https://anistar.studio 를 유지한다(웹 도메인과 무관, 실기기에서 유효).
+    // P1-3: 이 값이 없으면 loopback/엉뚱한 기본값이 번들에 굽힌다 → Web 경로(build-web.mjs)와
+    // 동일하게 public-consts.mjs 로 해석한다(해석 규칙 단일화).
+    NEXT_PUBLIC_GOSPEL_API_BASE: publicConsts.NEXT_PUBLIC_GOSPEL_API_BASE,
+    NEXT_PUBLIC_FLOW_EVENTS_BASE: publicConsts.NEXT_PUBLIC_FLOW_EVENTS_BASE,
     NODE_ENV: "production",
   },
 });
@@ -211,7 +218,7 @@ for (const p of [path.join(OUT, "admin"), path.join(OUT, "admin.html")]) {
 
 // ── 3. <meta http-equiv> CSP 주입 (정적 익스포트가 잃어버린 보안 헤더 보완) ──
 const htmls0 = walk(OUT).filter((f) => f.toLowerCase().endsWith(".html"));
-const metas = metaEquivalent(apiBase);
+const metas = metaEquivalent(apiBase, connectOriginsFrom(publicConsts));
 let injected = 0;
 for (const file of htmls0) {
   let html = fs.readFileSync(file, "utf8");

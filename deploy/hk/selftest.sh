@@ -149,6 +149,11 @@ chk "Caddy 挂载前端产物"  "$(grep -c 'out:/srv' "$TEST/last.log")" "1"
 chk "Caddyfile 含 /api 路由"  "$(grep -c 'handle /api/\*' "$TEST/app/Caddyfile")" "1"
 chk "Caddyfile 含静态托管"    "$(grep -c 'file_server' "$TEST/app/Caddyfile")" "1"
 chk "前端 API 基址内联域名"    "$(grep -c "NEXT_PUBLIC_API_BASE=https://music.example.com" "$TEST/last.log")" "1"
+# P1-3：GOSPEL / EVENTS 也必须注入（此前 Web 路径从未注入 → 联系我们打错域、埋点静默丢）。
+chk "前端 GOSPEL 基址已注入"    "$(grep -c "NEXT_PUBLIC_GOSPEL_API_BASE=https://anistar.studio" "$TEST/last.log")" "1"
+chk "前端 EVENTS 基址已注入"    "$(grep -c "NEXT_PUBLIC_FLOW_EVENTS_BASE=https://anistar.studio" "$TEST/last.log")" "1"
+chk "构建期常量校验执行"        "$(grep -c "构建期常量：API=" "$TEST/last.log")" "1"
+chk "走 build-web 而非裸 next"  "$(grep -c "node scripts/build-web.mjs" "$TEST/last.log")" "1"
 # probe_mureka.py 在 backend/scripts/（根 scripts/ 只有 validate_compose_env.py）。
 # 拷错目录 → python 报 can't open file 并以 exit 2 退出，而 2=401 → 会被**误诊成密钥错误**。
 # ⚠ 查 MOCKLOG 而非 last.log：bootstrap 把 cp 的输出重定向到了 /dev/null。
@@ -164,6 +169,38 @@ chk "缺 --env-file 的 compose 调用" "$BAD_COMPOSE" "0"
 RC="$(run)"
 chk "重复执行仍成功"     "$RC" "0"
 chk "未重复构建前端"     "$(grep -c '前端产物已是最新' "$TEST/last.log")" "1"
+
+echo "== 4b) 构建期常量非法必须 fail-fast（不静默兜底）=="
+# loopback GOSPEL（https）→ 必须中止（历史上 Web 打包 localhost:8000 = 上线即死链）
+/bin/rm -rf "$TEST/app/frontend/out"
+export GOSPEL_API_BASE="https://localhost:8443"
+RC="$(run)"
+chk "非 0 退出（loopback）"   "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+chk "原因是常量校验"          "$(grep -c '构建期常量校验失败' "$TEST/last.log")" "1"
+chk "定位到 GOSPEL 变量"      "$(grep -c 'NEXT_PUBLIC_GOSPEL_API_BASE' "$TEST/last.log")" "1"
+chk "点名 loopback"          "$([ "$(grep -c '指向 loopback' "$TEST/last.log")" -ge 1 ] && echo yes || echo no)" "yes"
+export GOSPEL_API_BASE="http://localhost:8000"
+RC="$(run)"
+chk "http loopback 亦中止"    "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+chk "报为必须 https"          "$([ "$(grep -c '必须是 https' "$TEST/last.log")" -ge 1 ] && echo yes || echo no)" "yes"
+unset GOSPEL_API_BASE
+
+# 非 https 的 EVENTS → 同样中止
+export FLOW_EVENTS_BASE="http://anistar.studio"
+RC="$(run)"
+chk "非 0 退出（非 https）"   "$([ "$RC" -ne 0 ] && echo yes || echo no)" "yes"
+chk "点名非 https"           "$(grep -c '必须是 https' "$TEST/last.log")" "1"
+unset FLOW_EVENTS_BASE
+
+# 合法覆盖：GOSPEL/EVENTS 自定义域 → 成功且注入自定义值
+/bin/rm -rf "$TEST/app/frontend/out"
+export GOSPEL_API_BASE="https://gospel.example.org"
+export FLOW_EVENTS_BASE="https://events.example.org"
+RC="$(run)"
+chk "自定义常量退出 0"        "$RC" "0"
+chk "注入自定义 GOSPEL"       "$(grep -c "NEXT_PUBLIC_GOSPEL_API_BASE=https://gospel.example.org" "$TEST/last.log")" "1"
+chk "注入自定义 EVENTS"       "$(grep -c "NEXT_PUBLIC_FLOW_EVENTS_BASE=https://events.example.org" "$TEST/last.log")" "1"
+unset GOSPEL_API_BASE FLOW_EVENTS_BASE
 
 echo "== 5) 出口 403（地域封锁）不得中断部署，且必须给出处置提示 =="
 export MOCK_PROBE_CODE=3
