@@ -261,17 +261,29 @@ async def _mirror_to_cdn_for(song: Song, db: Session) -> str | None:
     return await cdn_mirror.mirror_song_audio(song, db)
 
 
-def _available_formats(song: Song) -> list[str]:
-    """本曲**实际可下载**的格式列表。
+def _download_source(song: Song, fmt: str) -> str:
+    """该曲在 `fmt` 下**真正可下载**的取源 URL（取不到则空串）。
 
-    无损链接缺失时不列出对应格式 —— 前端据此禁用选项，避免「能点但拿不到」的假承诺。
-    mp3 是生成必返字段（Mureka 官方 choices[].url），故只要 audio_url 在即可下载。
+    口径唯一：`_available_formats`（对外声明）与 `download_song`（实际下载）
+    都必须走这里，否则就会出现「下拉框里有 / 点了 409」的假能力声明。
+
+    mp3 是「整曲」这一份资产 → 走 `full_audio_url`（GAP-019：CDN 优先、上游兜底）；
+    wav/flac 上游只给互链，没有 CDN 版本 → 直接用各自列。
     """
-    out = []
-    for fmt, (col, _mt, _ext) in _AUDIO_FORMATS.items():
-        if getattr(song, col, None):
-            out.append(fmt)
-    return out
+    if fmt == "mp3":
+        return full_audio_url(song) or ""
+    col, _mt, _ext = _AUDIO_FORMATS[fmt]
+    return getattr(song, col, None) or ""
+
+
+def _available_formats(song: Song) -> list[str]:
+    """本曲**实际可下载**的格式列表（= 一定下得到的那些）。
+
+    判据是「取源 URL 非空」而非「DB 列非空」：GAP-019 后 mp3 走 `full_audio_url`，
+    CDN 挂/尚未重建时 `audio_url` 列仍有值，但该链接可能已过期播不了 —— 以列为准
+    会对前端撒谎（渲染出选项、点下去 302/409）。以取源为准 = 声明与下载同一口径。
+    """
+    return [fmt for fmt in _AUDIO_FORMATS if _download_source(song, fmt)]
 
 
 def _to_out(
@@ -2110,12 +2122,12 @@ def download_song(
             status_code=400,
             detail=f"不支持的格式：{format}（仅支持 mp3 / wav / flac）",
         )
-    col, media_type, ext = _AUDIO_FORMATS[fmt]
-    source = getattr(song, col, None)
-    if fmt == "mp3":
-        # GAP-010 × GAP-019：mp3 是「整曲」这一份资产，下载同样走 CDN（省出口带宽、
-        # 免上游链接过期 404）。wav/flac 只有上游互链，无 CDN 版本 → 行为不变。
-        source = full_audio_url(song) or source
+    _col, media_type, ext = _AUDIO_FORMATS[fmt]
+    # GAP-010 × GAP-019：mp3 是「整曲」这一份资产，下载同样走 CDN（省出口带宽、
+    # 免上游链接过期 404）。wav/flac 只有上游互链，无 CDN 版本 → 行为不变。
+    # 与 `_available_formats` 共用 `_download_source`：**声明可下 = 真的下得到**，
+    # 两处各写一份 fallback 迟早会漂移（本期 #152 就是漂移出来的 409）。
+    source = _download_source(song, fmt)
     if not source:
         # 该曲无此格式（多为上游未返无损链接，或老数据迁移前生成）。
         raise HTTPException(
