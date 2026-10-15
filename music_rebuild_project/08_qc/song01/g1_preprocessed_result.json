@@ -1,0 +1,46 @@
+{
+  "G1-9": {
+    "detail": "全部 1 个文件哈希与 source_manifest.txt 一致",
+    "status": "PASS"
+  },
+  "config": {
+    "dpi_min": 300,
+    "dpi_relaxed": 200,
+    "short_min": 2400,
+    "short_relaxed": 1800
+  },
+  "errors": [],
+  "files": [
+    {
+      "checks": {
+        "G1-1": {
+          "detail": "dpi=300.0≥300，短边=2480≥2400（线距≥8px 须人工/P30 验证）",
+          "status": "PASS"
+        },
+        "G1-8": {
+          "detail": "容器=jpeg 子类型=raster 可准入；handwriting 恒=requires_human：须人工确认是否手写，未确认前不得自动 OMR",
+          "status": "PASS"
+        }
+      },
+      "container": "jpeg",
+      "dpi": 300.0,
+      "height": 3508,
+      "path": "02_source\\song01\\preprocessed\\song01_preprocessed_v001.jpeg",
+      "sha256": "cf33c4f744374c4f1ad9f348d3f7868f5a3634f62c8673dac13722f4fb760b9f",
+      "status": "PASS",
+      "subtype": "raster",
+      "width": 2480
+    }
+  ],
+  "root": "02_source\\song01\\preprocessed",
+  "skipped_checks": [
+    "G1-1 线距≥8px（需像素分析）",
+    "G1-2 歪斜角（需 #30 deskew 输出）",
+    "G1-3 裁切完整性（人工勾选）",
+    "G1-4 页面顺序/缺页（需页码序列）",
+    "G1-5 文字可辨性（人工抽读）",
+    "G1-6 音符符号可区分（人工抽检）",
+    "G1-7 单页信息密度（需 OMR 计数）"
+  ],
+  "verdict": "PASS"
+}
