@@ -5,6 +5,7 @@ import { api, SongView, SpawnParams } from "@/lib/api";
 import { canPlayNext, canPlayPrevious, currentSong } from "@/lib/playlist";
 import {
   audioElementRef,
+  busCurrentSrc,
   busLoad,
   busPause,
   busPlay,
@@ -80,8 +81,6 @@ export default function Player({
   const previewUrlRef = useRef<string | null>(null); // 当前 blob URL，便于卸载/换歌时回收
   // 逐字歌词组件需要直接驱动音频元素（读 currentTime / 跳转）—— 现在是全局总线元素
   const { playing: audioPlaying } = useAudioStatus();
-  // 逐字歌词按需补全去重标记（见 ensureDetail）
-  const detailFetchedRef = useRef(false);
 
   useEffect(() => {
     setLocal(song);
@@ -107,7 +106,6 @@ export default function Player({
     }
     setPreviewSrc(null);
     setPreviewFailed(false);
-    detailFetchedRef.current = false; // 换歌后允许重新补全逐字歌词
   }, [local.audio_url, local.id]);
 
   // ── 播放队列 ────────────────────────────────────────────────────────────
@@ -122,7 +120,11 @@ export default function Player({
   const canPrev = canPlayPrevious(playlist);
   const canNext = canPlayNext(playlist, prefs);
 
-  // 自动连播：队列已前移，等本卡片拿到新的 song 后自动起播（一次性）
+  // 自动连播：队列已前移，等本卡片拿到新的 song 后自动起播（一次性）。
+  //
+  // 这个 effect 会被**两次**唤醒（autostart 置位、页面把当前曲目切过来），
+  // 所以闸门不能只靠 autostart：真正去重的是 onPlay() 里的起播短路
+  // （同一首已在播 → 直接返回，不再打 /play），见 onPlay 的 alreadyCurrent。
   useEffect(() => {
     if (!autostart || playlist?.currentSongId !== song.id) return;
     consumeAutostart();
@@ -157,37 +159,55 @@ export default function Player({
     setPreviewSrc(u);
   };
 
-  // 逐字歌词按需补全：列表/广场/首页接口恒返 lyrics_sync=null（仅详情端点带时间轴），
-  // 故用户首次播放时拉一次详情并合并；之后不再重复请求；失败不缓存（允许下次重试）。
-  // 这修复了「Web 在 library/plaza/home 浏览流里逐字歌词永不显示」的根因。
-  async function ensureDetail() {
-    if (detailFetchedRef.current || !local.id || local.lyrics_sync) return;
-    detailFetchedRef.current = true;
-    try {
-      const d = await api.getSong(local.id);
-      setLocal((p) => ({
-        ...p,
-        lyrics_sync: d.lyrics_sync ?? p.lyrics_sync,
-        lyric: p.lyric ?? d.lyric,
-        cover_url: p.cover_url ?? d.cover_url,
-      }));
-    } catch {
-      detailFetchedRef.current = false;
-    }
+  /**
+   * 逐字歌词补全策略（一条 GET 都不多发）：
+   *
+   *   · `POST /api/songs/{id}/play` 的响应**就是** `SongOut`，且
+   *     `_to_out(..., include_sync=True)`（routers/songs.py:2071）→ 它**永远**带
+   *     lyrics_sync。而列表/广场/首页接口刻意不带（单首 ~10KB JSON 会撑大包体）。
+   *     所以「用户点播放」这条唯一需要逐字歌词的路径上，详情已经在手里了。
+   *   · 反过来「先不补、等某个后置时机再补」也不成立：`audio_url` 是登录态字段，
+   *     在匿名的 `GET /api/plaza` 里恒为 null，播放**必须**等在 play 响应之后 ——
+   *     这正是补一次详情会永远卡住的那条真实路径。
+   *
+   * 因此这里只剩**合并**：把 play 响应里的时间轴并进 `local`。它不再是发起方，
+   * 而是「播放响应 → 播放器状态」的唯一入口。
+   */
+  function mergePlayResponse(d: SongView) {
+    setLocal((p) => ({
+      ...p,
+      play_count: d.play_count ?? p.play_count,
+      lyrics_sync: d.lyrics_sync ?? p.lyrics_sync,
+      lyric: p.lyric ?? d.lyric,
+      cover_url: p.cover_url ?? d.cover_url,
+    }));
   }
 
   async function onPlay() {
-    void ensureDetail(); // 首次播放时补全逐字歌词（幂等）
     // 首次播放（或本曲尚未入队）→ 用所在页面列表锚定队列。
-    // playFrom 会把 autostart 置 true，这里立刻消费掉：真正的起播由本函数下方的逻辑负责，
-    // 否则会起播两次（第二次还会多打一次 /api/songs/{id}/play）。
+    //
+    // ⚠️ 必须传 autostart:false。默认 true 会造成一条真实的「复活环」（Wave5 #150）：
+    //    点播放 → playFrom 置 autostart=true → effect 跑 → consumeAutostart + onPlay()
+    //    → 又置回 true → effect 再跑 → 第二次 onPlay() → 同一首打两次 /play
+    //    → play_count 虚高（复现：队列 5 首点一次播放，POST 计数为 1,1,2,3,4）。
+    //    传 false 就是「把起播权留给自己」：队列设好，但不要唤醒任何人（含自己）。
     if (!inQueue || playlist?.currentSongId !== song.id) {
-      playFrom(list, queueIndex >= 0 ? queueIndex : 0);
-      consumeAutostart();
+      playFrom(list, queueIndex >= 0 ? queueIndex : 0, { autostart: false });
     }
+
+    // ── 起播短路（play_count 不虚高的主闸门）────────────────────────────────
+    // 同一首已经在总线里播着 → 不再打 /play、也不再重载音频。
+    // 这条判据必须问「总线」，而不是「autostart 那一瞬间的取值」：
+    // autostart 的置位与消费都可能被页面的重渲染穿插（实测消费发生在 song 切过来
+    // **之前**，见 PR 证据），用状态位去重会漏；总线是播放的唯一事实源，不会漂移。
+    const alreadyCurrent = inQueue && playlist?.currentSongId === song.id;
+    if (alreadyCurrent && busCurrentSrc()) return;
+
     try {
       const updated = await api.play(local.id);
-      setLocal((p) => ({ ...p, play_count: updated.play_count ?? p.play_count }));
+      // play 的响应体就是完整详情（含 lyrics_sync）→ 直接合并，省掉一次
+      // `GET /api/songs/{id}`（本曲详情 ~10KB，此前每首歌都要多拉一次）。
+      mergePlayResponse(updated);
       const url = local.audio_url || "";
       // 直接 http 直链：音频总线可直接播，无需 blob 回退
       if (!url.startsWith("/api/")) {

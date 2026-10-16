@@ -162,7 +162,16 @@ const getSnapshot = () => {
 };
 const getServerSnapshot = () => EMPTY;
 
-/** 把某张卡片「设为当前并起播」，同时用所在页面的列表锚定队列。 */
+/**
+ * 把某张卡片「设为当前并起播」，同时用所在页面的列表锚定队列。
+ *
+ * ⚠️ `autostart` 的真实语义是「**除本次调用者之外**，还要不要唤醒卡片自己起播」：
+ *   · 调用者（用户点的那张卡片）**正要把这首播出来**，它自己会走到 api.play()，
+ *     所以必须传 `{ autostart: false }` —— 否则 autostart=true 会让 Player 的
+ *     effect 再跑一遍 onPlay()，同一首歌打两次 `/play`（play_count 虚高一次）。
+ *   · `true` 只留给「没人会替它起播」的场景：别的卡片接棒、外部把队列推进后
+ *     等对应卡片挂载接手。默认值仍是 true，因为默认语义是「起播」而不是「只设队列」。
+ */
 export function playFrom(
   songs: SongView[],
   index: number,
@@ -182,6 +191,11 @@ export function replaceCurrent(updated: SongView) {
 /**
  * 前进。返回切到的曲目（可能是同一首，repeat=one）；null = 列表已放完。
  * 调用方拿到曲目后需把它交给对应卡片（onReplaceSong），autostart 会驱动自动起播。
+ *
+ * ⚠️ 这里置 `autostart: true` 是**故意**的：拿到返回值的是「别的卡片」，它没有
+ *    播这首的义务，必须由状态位的 false→true 翻转去唤醒目标卡片（见 Player 的
+ *    autostart effect）。因此调用方**不要**在拿到这首之后自己再调 playFrom() ——
+ *    Player.onPlay() 内部已经对这种情况做了「已在播就直接返回」的短路。
  */
 export function advance(): SongView | null {
   const st = snapshot.playlist;

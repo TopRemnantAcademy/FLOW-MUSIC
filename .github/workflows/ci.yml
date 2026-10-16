@@ -52,20 +52,19 @@ jobs:
         run: npm run test:a11y
       - name: Web build
         run: npx next build
-      # [P1-3/#155] 构建期常量 fail-fast 回归：缺值 / loopback 必须**失败**。
-      # 这条不依赖 next 全量构建，秒级完成，防止"删掉校验"这种静默退化。
+      # [P1-3/#155] build-time const fail-fast regression: missing/loopback must FAIL.
       - name: 构建期常量校验 fail-fast（缺值必败）
         run: |
           set -euo pipefail
           if NEXT_PUBLIC_API_BASE=https://music.example.com node scripts/public-consts.mjs check >/dev/null 2>&1; then
-            echo "::error::缺失 NEXT_PUBLIC_GOSPEL_API_BASE / FLOW_EVENTS_BASE 时竟然通过 —— fail-fast 被破坏"
+            echo "::error::missing GOSPEL/FLOW_EVENTS_BASE but check passed -- fail-fast broken"
             exit 1
           fi
           if NEXT_PUBLIC_API_BASE=http://localhost:8000 \
              NEXT_PUBLIC_GOSPEL_API_BASE=https://anistar.studio \
              NEXT_PUBLIC_FLOW_EVENTS_BASE=https://anistar.studio \
              node scripts/public-consts.mjs check >/dev/null 2>&1; then
-            echo "::error::loopback API base 竟然通过 —— fail-fast 被破坏"
+            echo "::error::loopback API base passed -- fail-fast broken"
             exit 1
           fi
           echo "fail-fast OK"
@@ -78,6 +77,8 @@ jobs:
           node scripts/build-web.mjs
           grep -q 'connect-src.*https://anistar.studio' out/index.html
           echo "build-web CSP OK"
+      - name: Wave5 #150 regression: play count not inflated + no duplicate detail fetch
+        run: npm run test:player
       - name: i18n 自检（词典 key 一致性 / 静态导出可枚举 / locale 持久化接线）
         run: node scripts/verify-i18n.mjs
       - name: PWA 自检（GAP-018 回归）

@@ -14,7 +14,9 @@
     "verify:apk": "node scripts/build-apk.mjs --api=https://api.anistar.studio",
     "check:release": "node scripts/check-release-notes.mjs --strict",
     "lint:a11y": "eslint . --ext .js,.jsx,.ts,.tsx",
-    "test:a11y": "tsx tests/a11y-keyboard.test.tsx"
+    "test:a11y": "tsx tests/a11y-keyboard.test.tsx",
+    "test:player": "tsx tests/player-play-count.test.tsx",
+    "test:all": "npm run test:contract && npm run test:player"
   },
   "dependencies": {
     "next": "^16.3.8",

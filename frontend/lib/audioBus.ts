@@ -159,6 +159,17 @@ export function busLoad(src: string, autoplay = true) {
   if (autoplay) void a.play().catch(() => {});
 }
 
+/**
+ * 总线当前装载的音频地址引用（未装载过 → null）。
+ *
+ * 给「同一首歌已经在播，别重复计数/重载」这类判据用：总线是播放状态的
+ * **唯一事实源**，比起各组件自己维护 ref 再和总线比对，直接问总线不会漂移。
+ * 刻意只暴露读取、不暴露赋值 —— 写入路径只有 busLoad 一条。
+ */
+export function busCurrentSrc(): string | null {
+  return el ? el.currentSrc || el.src || null : null;
+}
+
 export function busPlay() {
   void ensureEl().play().catch(() => {});
 }
