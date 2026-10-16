@@ -34,7 +34,7 @@
               music_rebuild_project/tools/checks/tests/test_g1_auto.py \
               music_rebuild_project/tools/checks/tests/test_check_licenses.py \
               music_rebuild_project/tools/checks/tests/test_g1_image_quality.py \
-              music_rebuild_project/deploy/omr-qa/tests/test_smoke_cv.py \
+              music_rebuild_project/deploy/omr-qa/tests/ \
               -q -p no:cacheprovider
         - name: 静态许可门禁（对外栈禁 AGPL/GPL）
           script: |
@@ -64,6 +64,14 @@
             pip install --no-cache-dir \
               -r music_rebuild_project/deploy/omr-qa/requirements-omr.txt
           timeout: 30m
+        - name: 强制 headless OpenCV（rapidocr 会拉非 headless 版覆盖它）
+          script: |
+            set -eu
+            # rapidocr-onnxruntime 硬依赖 opencv-python（非 headless），与
+            # opencv-python-headless 共用 cv2 包名 → 后装者胜，无头容器炸 libGL.so.1。
+            # 卸掉非 headless 版并重装 headless；卸不掉时由下面 smoke_cv 红给看。
+            pip uninstall -y opencv-python
+            pip install --no-cache-dir --force-reinstall --no-deps opencv-python-headless
         - name: oemer 补丁（bbox.find_lines 形状；幂等）
           script: |
             set -eu
@@ -92,7 +100,7 @@ main:
               music_rebuild_project/tools/checks/tests/test_g1_auto.py \
               music_rebuild_project/tools/checks/tests/test_check_licenses.py \
               music_rebuild_project/tools/checks/tests/test_g1_image_quality.py \
-              music_rebuild_project/deploy/omr-qa/tests/test_smoke_cv.py \
+              music_rebuild_project/deploy/omr-qa/tests/ \
               -q -p no:cacheprovider
         - name: 静态许可门禁（对外栈禁 AGPL/GPL）
           script: |

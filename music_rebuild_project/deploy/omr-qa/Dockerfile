@@ -40,6 +40,15 @@ RUN python /app/tools/checks/check_licenses.py --requirements /app/deploy/omr-qa
 # ---- 2) 安装对外栈依赖 ----
 RUN pip install --no-cache-dir -r /app/deploy/omr-qa/requirements-omr.txt
 
+# ---- 2b) 强制 headless OpenCV（关键，勿删）----
+# rapidocr-onnxruntime 硬声明依赖 `opencv-python`（**非** headless），而它与
+# `opencv-python-headless` 共用同一个 `cv2` 包名 —— 装完后者会被前者**覆盖**，
+# 于是无头容器里 `import cv2` 炸 `libGL.so.1`（GUI 构建链带 Qt/X11 共享库）。
+# 这里显式卸掉非 headless 版并重装 headless，保证镜像里只剩 headless。
+# 若卸不掉（pip 版本行为变化），下面的 smoke_cv.py 会以构建失败把问题拦下。
+RUN pip uninstall -y opencv-python \
+ && pip install --no-cache-dir --force-reinstall --no-deps opencv-python-headless
+
 # ---- 3) 许可门禁（动态）：装完再扫环境，防止传递依赖带入 GPL/AGPL ----
 RUN python /app/tools/checks/check_licenses.py --env
 
