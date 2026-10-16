@@ -15,6 +15,12 @@ docaligner-docsaid==1.1.1         # license: Apache-2.0   (G1-3 裁切：文档�
 music21>=9.1                      # license: BSD-3-Clause (MusicXML 解析/小节-音长校验)
 numpy                             # license: BSD-3-Clause
 Pillow                            # license: MIT-CMU
+# ⚠ opencv **必须**用 headless 版：无头容器里非 headless 版 import cv2 会炸
+#   libGL.so.1 / libxcb.so.1（GUI 构建链带 Qt/X11 动态库，镜像里没有）。
+#   但 rapidocr-onnxruntime 硬声明依赖 `opencv-python`（非 headless），装完会**覆盖**
+#   headless（同一个 cv2 包名，后写者胜）→ 必须显式把它卸掉，见 requirements 末尾的
+#   `opencv-python-headless` 置于最后 + Dockerfile 的 uninstall 步骤。
+#   断言由 deploy/omr-qa/smoke_cv.py 兜底（CI 重活 stage 与镜像构建期共用）。
 opencv-python-headless            # license: Apache-2.0
 Shapely                           # license: BSD-3-Clause
 pyclipper                         # license: MIT
