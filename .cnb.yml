@@ -1,0 +1,95 @@
+# .cnb.yml — 仓库根流水线（⚠ 必须在**仓库根**：放 `.cnb/` 目录内会注册失败 [CONFIG_YAML_EMPTY]）
+#
+# 职责分工（见 issue #165）：
+#   ① 快活门禁（fast，目标 < 60s）：单测 + 静态许可断言。挂 pull_request 与 push，
+#      每次提交都跑 —— 这类断言必须**永远自动执行**，否则回归只能靠人肉发现。
+#   ② 重活门禁（heavy）：装对外 OMR 栈（~2.4 min）→ oemer 补丁 → 动态许可 → CV 冒烟。
+#      **只挂 api_trigger**（手动触发），不进 push 路径，避免每次提交都装 79 个包。
+#
+# 硬约束：门禁失败必须非零退出。本文件**禁止**出现 `|| true` / `allowFailure: true`
+#         之类吞错写法 —— 那等于把门禁变成"绿灯装饰"。
+#
+# 触发方式（重活）：
+#   cnb build start-build --repo flow.237/FLOW-MUSIC --branch feat/165-ci-gate \
+#     --event api_trigger --title "165 heavy"
+
+# ---- 快活门禁：PR / push main 自动执行 --------------------------------------
+"$":
+  pull_request:
+    - name: gate-fast
+      docker:
+        image: python:3.12-slim
+      stages:
+        - name: 单测（G1 自动判定 + 许可断言 + 图像门）
+          script: |
+            set -eu
+            pip install -q pytest
+            python -m pytest \
+              music_rebuild_project/tools/checks/tests/test_g1_auto.py \
+              music_rebuild_project/tools/checks/tests/test_check_licenses.py \
+              music_rebuild_project/tools/checks/tests/test_g1_image_quality.py \
+              music_rebuild_project/deploy/omr-qa/tests/test_smoke_cv.py \
+              -q -p no:cacheprovider
+        - name: 静态许可门禁（对外栈禁 AGPL/GPL）
+          script: |
+            set -eu
+            python music_rebuild_project/tools/checks/check_licenses.py \
+              --requirements music_rebuild_project/deploy/omr-qa/requirements-omr.txt
+
+main:
+  push:
+    - name: gate-fast
+      docker:
+        image: python:3.12-slim
+      stages:
+        - name: 单测（G1 自动判定 + 许可断言 + 图像门）
+          script: |
+            set -eu
+            pip install -q pytest
+            python -m pytest \
+              music_rebuild_project/tools/checks/tests/test_g1_auto.py \
+              music_rebuild_project/tools/checks/tests/test_check_licenses.py \
+              music_rebuild_project/tools/checks/tests/test_g1_image_quality.py \
+              music_rebuild_project/deploy/omr-qa/tests/test_smoke_cv.py \
+              -q -p no:cacheprovider
+        - name: 静态许可门禁（对外栈禁 AGPL/GPL）
+          script: |
+            set -eu
+            python music_rebuild_project/tools/checks/check_licenses.py \
+              --requirements music_rebuild_project/deploy/omr-qa/requirements-omr.txt
+
+  # ---- 重活门禁：仅手动 api_trigger（不挂 push）------------------------------
+  api_trigger:
+    - name: gate-heavy
+      docker:
+        image: python:3.12-slim
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 8
+      stages:
+        - name: 系统依赖（Tesseract 第二票 OCR）
+          script: |
+            set -eu
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              tesseract-ocr tesseract-ocr-kor tesseract-ocr-chi-sim
+            rm -rf /var/lib/apt/lists/*
+        - name: 装对外 OMR 栈（钉版，见 requirements-omr.txt）
+          script: |
+            set -eu
+            pip install --no-cache-dir \
+              -r music_rebuild_project/deploy/omr-qa/requirements-omr.txt
+          timeout: 30m
+        - name: oemer 补丁（bbox.find_lines 形状；幂等）
+          script: |
+            set -eu
+            python music_rebuild_project/deploy/omr-qa/apply_oemer_patch.py
+        - name: 动态许可门禁（装栈后复扫，防传递依赖带入 GPL/AGPL）
+          script: |
+            set -eu
+            python music_rebuild_project/tools/checks/check_licenses.py --env
+        - name: CV 冒烟断言（无头容器 import cv2 不得报 libxcb.so.1）
+          script: |
+            set -eu
+            python music_rebuild_project/deploy/omr-qa/smoke_cv.py \
+              music_rebuild_project/02_source/song01/preprocessed/song01_preprocessed_v001.jpeg

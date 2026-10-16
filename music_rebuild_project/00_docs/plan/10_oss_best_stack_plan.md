@@ -62,11 +62,40 @@
 ### P0 — 已完成（本轮之前）
 - G1 七项自动化（`g1_auto.py` + `--auto`）· RapidOCR 集成 · 准确率测量骨架（`g1_accuracy.py`，false_pass=0 红线 + 样本护栏）。
 
-### P1 — 许可合规栈固化（下一步）
-1. 修正 `02_tool_selection_matrix.md` §1（AGPL 事实 + 对外服务禁用 AGPL）。
-2. `oemer` 钉版固化：`onnxruntime==1.20.0` + `bbox.find_lines` 补丁（已有 `plan/patches/`）。
-3. **music21 接入**：MusicXML → 小节/音长/拍号一致性校验（G2 可复用）。
-4. 服务镜像（`deploy/omr-qa/Dockerfile`）：oemer + RapidOCR + DocAligner + music21 + （可选）Tesseract；**检查点/模型预置入镜像**。
+### P1 — 许可合规栈固化（已完成，2026-10-16）
+1. ✅ 修正 `02_tool_selection_matrix.md` §1（AGPL 事实 + 对外服务禁用 AGPL）。
+2. ✅ `oemer` 钉版固化：`onnxruntime==1.20.0` + `bbox.find_lines` 补丁（`plan/patches/`）。
+3. ✅ **music21 接入**：MusicXML → 小节/音长/拍号一致性校验（G2 可复用）。
+4. ✅ 服务镜像（`deploy/omr-qa/Dockerfile`）：oemer + RapidOCR + DocAligner + music21 + Tesseract；**检查点/模型预置入镜像**。
+5. ✅ **CI 固化（#165）**——见下节。
+
+### P1-5 — CI 已固化（#165，2026-10-16）
+
+**门禁不再靠人肉执行**：仓库根 `.cnb.yml` 把两类门禁钉进流水线。
+
+| Stage | 触发 | 做什么 | 实测耗时 |
+|---|---|---|---|
+| **快活** `gate-fast` | `pull_request` + `push main` | 单测 93 例（`test_g1_auto` / `test_check_licenses` / `test_g1_image_quality`）+ 静态许可门禁（`--requirements`） | **< 60s**（容器 `python:3.12-slim`，无重依赖） |
+| **重活** `gate-heavy` | **仅** `api_trigger`（手动） | 装 79 包对外栈 → `apply_oemer_patch.py` → 动态许可门禁（`--env`）→ `smoke_cv.py` CV 冒烟 | ~2.4 min（装栈为主） |
+
+**设计要点（每一条都是踩过坑换来的）**：
+
+- `.cnb.yml` **必须在仓库根**；放 `.cnb/` 目录内会注册失败 `[CONFIG_YAML_EMPTY]`。
+- **重活不进 push 路径**：否则每次提交都要装 79 个包，把反馈周期从秒级拖到分钟级。
+- **门禁失败必须非零退出**：全文件禁止 `|| true` / `allowFailure: true` —— 否则门禁只是"绿灯装饰"。
+- **脚本不得依赖 `git`/`node`**（slim 镜像里没有）；需要状态就用读文件断言。
+- 抽出可复用冒烟脚本 `deploy/omr-qa/smoke_cv.py`，**CI 重活 stage 与 Dockerfile 构建期共用**同一断言，避免两处各写一份而漂移。
+
+**`smoke_cv.py` 为什么必要**：`collect_metrics(..., engines=("cv",))` 的语义是**降级不抛出** ——
+引擎挂了只往 `m.errors` 里记一笔，照常返回近乎全空的对象，判定层的 `SKIP` 也不会计入失败。
+没人查 `errors`，"引擎坏了"就静默滑过。本脚本只做一件事：**跑一次 cv，断言真测到了线距**
+（`unit_size_px is not None` 且 `errors` 为空），否则非零退出。
+
+**opencv 策略（`opencv-python-headless`）**：无头镜像里装非 headless 的 `opencv-python`，
+`import cv2` 会炸 `libxcb.so.1: cannot open shared object file`（无 X11 运行时）。
+本栈钉 **`opencv-python-headless`**（`requirements-omr.txt` 已标注 Apache-2.0），
+而 `smoke_cv.py` 就是这条策略的**可执行断言**——换回非 headless 版本，CI 立刻红。
+`smoke_cv` 对 song01 实测线距 **18.00px**，与 oemer 的 18.32px 交叉一致（#163/#164 基线）。
 
 ### P2 — 双引擎共识（提准确率）
 5. **SMT（MIT）** 接入为第二 OMR：与 oemer 独立判定；一致→高置信，分歧→NOTE 不放行（对齐 09 §5 的 L2）。
@@ -100,11 +129,12 @@
 - [x] P1-1 修正选型矩阵许可事实（`02_tool_selection_matrix.md` §1：AGPL 事实 + 降级 + 基线改判 oemer/SMT）
 - [x] P1-2 钉版与补丁固化：`deploy/omr-qa/requirements-omr.txt`（逐行标许可）+ `deploy/omr-qa/apply_oemer_patch.py`（幂等，位点变了响亮失败）
 - [x] P1-3 music21 接入：`tools/checks/score_xml_validate.py`（结构校验；**如实报覆盖**）
-- [x] P1-4 服务镜像：`deploy/omr-qa/Dockerfile`（**构建期两次许可门禁**：静态 + 动态）
+- [x] P1-4 服务镜像：`deploy/omr-qa/Dockerfile`（**构建期三次断言**：静态许可 + 动态许可 + CV 冒烟）
 - [x] P3-8（提前）许可断言工具：`tools/checks/check_licenses.py`（静态 12/12 OK；动态真实环境 40 OK/0 违规；35 用例）
 
 ### 待办
-- [ ] P1-5 装 Tesseract 后补齐 OCR 第二票（`--env` 复扫）
+- [x] P1-5 装 Tesseract 后补齐 OCR 第二票（`--env` 复扫）—— 重活 stage 已含动态 `--env` 门禁
+- [x] **P1-6 CI 固化（#165）**：根 `.cnb.yml`（快活门禁自动跑 + 重活走 `api_trigger`）+ `smoke_cv.py` 复用断言
 - [ ] P2-5 SMT（MIT）接入为第二 OMR → 双引擎共识
 - [ ] P2-6 L1 合成标定集生成器 `g1_calibrate.py`（注入已知真值，零人工，上千样本）
 - [ ] P3-7 服务化：并发/超时/缓存/压测；`/api/score/assess`
