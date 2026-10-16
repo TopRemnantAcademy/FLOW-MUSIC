@@ -25,5 +25,3 @@ opencv-python-headless            # license: Apache-2.0
 Shapely                           # license: BSD-3-Clause
 pyclipper                         # license: MIT
 PyYAML                            # license: MIT
-
-audiveris==5.5              # license: AGPL-3.0   (故意破坏：验证门禁真的在拦)
