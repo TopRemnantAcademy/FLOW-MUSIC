@@ -92,7 +92,7 @@
         "adjustable": true,
         "changed_by": "automation",
         "changed_at": "2026-10-16",
-        "reason": "G1-7：每页系统数 ≤6（超出则拆页或重拍）"
+        "reason": "G1-7：每页系统数 ≤6（超出则拆页或重拍）。**阈值维持 6，不放宽**：#163 T3 L1 合成标定（几何侧 K∈{4,6,8,10}：可测率均 1.0、span 均在页内；OMR 侧见 08_qc/calibration/l1_synthetic_report.json 的 omr_systems）**只证明测量链路可信，未给出「K>6 仍可识别」的证据**。放行证据缺口在于缺 K∈{7,8,9} 的 OMR 实测（需真实/合成注音页喂 oemer 数检出 systems）。故本条保持 6，song01（8 系统）继续 FAIL（待标定 + 拆页/重拍）。"
       },
       "measures_max": {
         "value": 24,
@@ -100,6 +100,12 @@
         "changed_by": "automation",
         "changed_at": "2026-10-16",
         "reason": "G1-7：每页小节数 ≤24（超出则拆页或重拍）"
+      },
+      "calibration": {
+        "report": "08_qc/calibration/l1_synthetic_report.json",
+        "harness": "tools/checks/g1_calibrate.py",
+        "scope": "L1 合成：测量→阈值→三态链路；不含真实世界准确率（需 L3 标注集）",
+        "added_at": "2026-10-16"
       }
     },
     "engines": {

@@ -1,0 +1,230 @@
+{
+  "mode": "L1-synthetic",
+  "n_samples": 360,
+  "checks": [
+    "G1-1L",
+    "G1-2",
+    "G1-3",
+    "G1-7"
+  ],
+  "overall": {
+    "comparisons": 1080,
+    "agreements": 1080,
+    "agreement_rate": 1.0,
+    "false_pass": [],
+    "false_pass_count": 0,
+    "false_skip": {},
+    "truth_balance_ok": true,
+    "known_gaps": []
+  },
+  "per_check": {
+    "G1-1L": {
+      "comparisons": 360,
+      "agreements": 360,
+      "agreement_rate": 1.0,
+      "coverage": 1.0,
+      "abstain": 0,
+      "truth_distribution": {
+        "FAIL": 60,
+        "NOTE": 60,
+        "PASS": 240
+      },
+      "truth_balance_ok": true,
+      "false_pass": [],
+      "mismatches": [],
+      "mismatch_count": 0
+    },
+    "G1-2": {
+      "comparisons": 360,
+      "agreements": 360,
+      "agreement_rate": 1.0,
+      "coverage": 1.0,
+      "abstain": 0,
+      "truth_distribution": {
+        "PASS": 216,
+        "NOTE": 72,
+        "FAIL": 72
+      },
+      "truth_balance_ok": true,
+      "false_pass": [],
+      "mismatches": [],
+      "mismatch_count": 0
+    },
+    "G1-3": {
+      "comparisons": 360,
+      "agreements": 360,
+      "agreement_rate": 1.0,
+      "coverage": 1.0,
+      "abstain": 0,
+      "truth_distribution": {
+        "FAIL": 120,
+        "PASS": 240
+      },
+      "truth_balance_ok": true,
+      "false_pass": [],
+      "mismatches": [],
+      "mismatch_count": 0
+    },
+    "G1-7": {
+      "comparisons": 0,
+      "agreements": 0,
+      "agreement_rate": null,
+      "coverage": 0.0,
+      "abstain": 360,
+      "truth_distribution": {
+        "PASS": 180,
+        "FAIL": 180
+      },
+      "truth_balance_ok": true,
+      "false_pass": [],
+      "mismatches": [],
+      "mismatch_count": 0
+    }
+  },
+  "scale_error": {
+    "unit_size_px": {
+      "abs_median": 0.0,
+      "abs_max": 0.0,
+      "rel_median": 0.0,
+      "n": 360
+    },
+    "skew_deg": {
+      "abs_median": 0.023155681024441988,
+      "abs_max": 0.15805734399543991,
+      "rel_median": 0.019045928348280783,
+      "n": 360
+    }
+  },
+  "systems": {
+    "injected_K": [
+      4,
+      6,
+      8,
+      10
+    ],
+    "per_k": {
+      "4": {
+        "samples": 90,
+        "unit_size_measured": 90,
+        "unit_size_measure_rate": 1.0,
+        "spacing_abs_err_max": 0.0,
+        "span_geo_min_px": 380.0,
+        "span_geo_max_px": 440.0,
+        "page_height_px": 2200,
+        "span_fits_page": true,
+        "span_measured_max_px": 440.0,
+        "injected_truth": "PASS"
+      },
+      "6": {
+        "samples": 90,
+        "unit_size_measured": 90,
+        "unit_size_measure_rate": 1.0,
+        "spacing_abs_err_max": 0.0,
+        "span_geo_min_px": 620.0,
+        "span_geo_max_px": 680.0,
+        "page_height_px": 2200,
+        "span_fits_page": true,
+        "span_measured_max_px": 680.0,
+        "injected_truth": "PASS"
+      },
+      "8": {
+        "samples": 90,
+        "unit_size_measured": 90,
+        "unit_size_measure_rate": 1.0,
+        "spacing_abs_err_max": 0.0,
+        "span_geo_min_px": 860.0,
+        "span_geo_max_px": 920.0,
+        "page_height_px": 2200,
+        "span_fits_page": true,
+        "span_measured_max_px": 920.0,
+        "injected_truth": "FAIL"
+      },
+      "10": {
+        "samples": 90,
+        "unit_size_measured": 90,
+        "unit_size_measure_rate": 1.0,
+        "spacing_abs_err_max": 0.0,
+        "span_geo_min_px": 1100.0,
+        "span_geo_max_px": 1160.0,
+        "page_height_px": 2200,
+        "span_fits_page": true,
+        "span_measured_max_px": 1160.0,
+        "injected_truth": "FAIL"
+      }
+    },
+    "max_geo_measurable_K": 10,
+    "page_height_px": 2200,
+    "comment": "几何侧：K 组系统在合成页上的「可测性」。`max_geo_measurable_K` 是页面几何能支撑的上限，**不是** G1-7 阈值结论 —— OMR 检出上限见 `omr_systems`（两条腿合判）。"
+  },
+  "params": {
+    "spacings": [
+      5.0,
+      6.0,
+      8.0,
+      10.0,
+      14.0,
+      20.0
+    ],
+    "angles": [
+      0.0,
+      0.3,
+      0.8,
+      1.2,
+      2.5
+    ],
+    "systems": [
+      4,
+      6,
+      8,
+      10
+    ],
+    "bboxes": [
+      0,
+      16,
+      48
+    ],
+    "repeat": 1,
+    "engine": "cv"
+  },
+  "omr_systems": {
+    "status": "SKIP",
+    "per_k": {
+      "4": {
+        "status": "SKIP",
+        "injected_K": 4,
+        "reason": "oemer 不可用：本机未安装（镜像/CI 需装对外栈）",
+        "engines": [
+          "oemer"
+        ]
+      },
+      "6": {
+        "status": "SKIP",
+        "injected_K": 6,
+        "reason": "oemer 不可用：本机未安装（镜像/CI 需装对外栈）",
+        "engines": [
+          "oemer"
+        ]
+      },
+      "8": {
+        "status": "SKIP",
+        "injected_K": 8,
+        "reason": "oemer 不可用：本机未安装（镜像/CI 需装对外栈）",
+        "engines": [
+          "oemer"
+        ]
+      },
+      "10": {
+        "status": "SKIP",
+        "injected_K": 10,
+        "reason": "oemer 不可用：本机未安装（镜像/CI 需装对外栈）",
+        "engines": [
+          "oemer"
+        ]
+      }
+    },
+    "systems_exact_rate": null,
+    "comment": "OMR 侧：注入 K 个系统 → 检出 systems 是否等于 K。SKIP 表示引擎不可用（**不是**通过）；结论须以实测行为准。",
+    "attempt_note": "本机实测尝试记录（可复核）：在 CNB 工作区装 oemer 0.1.8 + onnxruntime 1.20.0 + bbox 补丁后，对**合成注音页**（K∈{4,6,8,10}）推理。前几例返回 oemer 内部异常（`IndexError: too many indices for array` / `AgglomerativeClustering` 样本不足），后续在 oemer 内部长时间停留（>15min/页，本环境无 GPU）而超时。因此「K>6 仍可识别」**未获实测证据** —— 按纪律不得据此放宽 G1-7 阈值。补测路径：在 deploy/omr-qa 镜像内跑 `g1_calibrate.py --engine oemer`（amd64 + 充足 CPU/超时），或直接用真实注音页/已标注页做 K 轴实测。",
+    "probe_harness": "tools/checks/g1_calibrate.py --engine oemer（systems_by_k / probe_omr_systems）"
+  }
+}
