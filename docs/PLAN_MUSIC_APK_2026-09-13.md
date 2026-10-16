@@ -6,6 +6,32 @@
 
 ---
 
+> ## ⚠️ 时效性声明（2026-10-16 复核，#154）
+>
+> **本文是 2026-09-13 的历史方案记录，部分路径与版本已失效。继续推进移动端请先读
+> [`PLAN_MUSIC_APP_2026-09-28.md`](./PLAN_MUSIC_APP_2026-09-28.md) 与
+> [`PLAN_MOBILE_CROSSPLATFORM_2026-09-29.md`](./PLAN_MOBILE_CROSSPLATFORM_2026-09-29.md)**，
+> 它们是本文的后继与遗漏审计。
+>
+> 已失效前提（逐条实测，勿照抄本文命令）：
+>
+> | 本文写法 | 仓库现状（2026-10-16） |
+> |---|---|
+> | Capacitor **6** | **Capacitor 8**（`native/package.json` 锁 `^8.0.0`）。Capacitor 6 已于 2026-01-20 EOL |
+> | 原生工程在 **`mobile/`**、`capacitor.config.json`、`android/` | 已改为独立工作区 **`native/`**：`native/capacitor.config.json`、`native/android/`。`mobile/` 在本仓库**不存在** |
+> | appId `com.gospelai.app` | 已改为 **`com.flowccm.app`**（`native/capacitor.config.json:2`） |
+> | `webDir` `mobile/dist/android` | 已改为 **`../frontend/out`**（`native/capacitor.config.json:4`） |
+> | `version.json` + `scripts/bump-version.js` + `scripts/collect-build.js` | **均不在本仓库**；`scripts/variants.js`、`scripts/build-config.js` 仍在，但 `build-config.js` 依赖的 `mobile/index.html` 模板已不在，直接跑会报错 |
+> | `mobile/APK_RELEASE_ZH.md`、根 `Caddyfile` | **不在本仓库** |
+> | 「后台播放需新增原生能力（§4 P0）」 | **已装** `@capgo/capacitor-native-audio@^8.4.30`（`native/package.json`）；Android 前台服务仍需自建，见后继方案 O-6 |
+> | 「全量 345 项 RC=0」（§2-A′） | 后端测试规模已是 **948 passed / 7 skipped**（收集 955 项）。`test_apk_cookie_samesite.py` **9 项**这一数字仍然准确 |
+>
+> 仍然成立的部分：§2-A 的 **Cookie 跨站约束与同站拓扑解法**、§2-B 静态导出丢 CSP、
+> §2-C Play Billing 强制、§2-E Mureka 地域封锁，以及 §7 声音克隆封存状态。
+> 这些结论与后继方案一致，方法论（真机门禁 + 回归护栏）也值得沿用。
+
+---
+
 ## 0. 结论摘要
 
 **能做，且比从零起步容易得多**——FLOW 已有成熟 Android 管道；音乐前端是纯客户端 SPA，可静态导出。
@@ -23,12 +49,12 @@
 
 | 资产 | 位置 / 证据 |
 |---|---|
-| Capacitor 6 工程 | `capacitor.config.json` + `android/`（appId `com.gospelai.app`，webDir `mobile/dist/android`） |
-| 多渠道构建 | `package.json` 脚本：`android:sync` / `android:sync:cn` / `android:sync:play`；`build:apk-release` / `build:aab-release` |
+| ~~Capacitor 6 工程~~ | ~~`capacitor.config.json` + `android/`（appId `com.gospelai.app`，webDir `mobile/dist/android`）~~ → **已失效**：现为 `native/capacitor.config.json` + `native/android/`（appId `com.flowccm.app`，webDir `../frontend/out`，Capacitor 8） |
+| 多渠道构建 | `package.json` 脚本：`android:sync` / `android:sync:cn` / `android:sync:play`；`build:apk-release` / `build:aab-release`<br>→ **现状**：移到 `native/package.json`（`sync:android` / `build:apk:release` / `build:aab:release`），根 `package.json` 已无这些脚本 |
 | 变体与市场 | `scripts/variants.js`、`build-config.js`（`--market=hk/cn/global`、`--channel=googleplay`） |
-| 版本与发布 | `version.json` + `scripts/bump-version.js`、`scripts/collect-build.js`、`mobile/APK_RELEASE_ZH.md` |
-| 已装原生插件 | `@capacitor/app`、`haptics`、`keyboard`、`status-bar`、`splash-screen` |
-| JDK | 构建脚本已固定 `JAVA_HOME=...jdk-17.0.20.8-hotspot` |
+| ~~版本与发布~~ | ~~`version.json` + `scripts/bump-version.js`、`scripts/collect-build.js`、`mobile/APK_RELEASE_ZH.md`~~ → **全部不在本仓库**，勿按此路径找文件 |
+| 已装原生插件 | `@capacitor/app`、`haptics`、`keyboard`、`status-bar`、`splash-screen`<br>→ **现状新增**：`@capgo/capacitor-native-audio@^8.4.30`（原生播放 / 锁屏媒体控制，见 `docs/MOBILE_THIRD_PARTY_NOTICES_ANDROID.md`） |
+| JDK | 构建脚本已固定 `JAVA_HOME=...jdk-17.0.20.8-hotspot`<br>→ **现状**：`native/scripts/build-android.sh`；Capacitor 8 另需 Node 22+、Android SDK 36 |
 
 ### 1.2 音乐前端（可行性前提）
 
@@ -107,7 +133,9 @@ chrome --headless=new --no-proxy-server \
 
 预期：B 场景 `cookie_sent=true`；把 api 换成跨站域则 `false`。
 
-**已固化的回归护栏**：`backend/tests/test_apk_cookie_samesite.py`（9 项，全量 345 项 RC=0）。
+**已固化的回归护栏**：`backend/tests/test_apk_cookie_samesite.py`（9 项，全绿）。
+> 数字订正（2026-10-16）：原文写的「全量 345 项」是 2026-09-13 **当时**的后端规模，现已过期；
+> 当前后端为 **948 passed / 7 skipped**（收集 955 项）。本文件的 9 项仍然准确。
 它把三件事钉死：Cookie 属性（HttpOnly / lax / HTTPS 下 Secure / HTTP 下不 Secure）、
 `/me` 只认 Cookie、以及上述 A–D 四种拓扑的同站判定。
 将来任何人改 `cookie_samesite`、无条件加 `Secure`、或把 APK/API 换到不同主域，
@@ -117,7 +145,8 @@ chrome --headless=new --no-proxy-server \
 
 - 需加 `output: 'export'` + `images: { unoptimized: true }`。
 - **代价**：`next.config.js` 的 `async headers()`（CSP/防护头）在静态导出下**不生效**。
-- 兜底：由承载层（Caddy/Nginx，仓库已有 `Caddyfile`）下发同等头，或退化为 `<meta http-equiv>`。**不可省略**，否则等于把上一轮的 CSP 加固白做。
+- 兜底：由承载层（Caddy/Nginx）下发同等头，或退化为 `<meta http-equiv>`。**不可省略**，否则等于把上一轮的 CSP 加固白做。
+  > 订正（2026-10-16）：上文原称「仓库已有 `Caddyfile`」——根 `Caddyfile` **不在本仓库**（`deploy/` 下有 compose 相关文件）。APK 路径现已由 `frontend/scripts/build-apk.mjs` 把 CSP 以 `<meta http-equiv>` 注入，实测 8/8 HTML 均带该 meta。
 
 ### C. Google Play 强制应用内购买
 
@@ -273,37 +302,24 @@ HTML 만 지우면 `_next/static/chunks/app/admin/page-*.js` 가 **그대로 남
 
 **现在的下一步 = 阶段 1（核心闭环）**，且**必须先补一次真机/浏览器验证**：
 
-1. **补 §2-A′ 段 3 的浏览器实测**（唯一未闭合门禁）——任意带 Chrome 的机器一条命令：
-   ```bash
-   python backend/scripts/probe_apk_samesite.py --serve 4174
-   chrome --headless=new --no-proxy-server \
-     --host-resolver-rules="MAP music.flow.test 127.0.0.1, MAP api.flow.test 127.0.0.1" \
-     --user-data-dir=%TEMP%\p1 \
-     "http://music.flow.test:4174/harness.html?api=http%3A%2F%2Fapi.flow.test%3A8000&tag=B"
-   ```
+1. **补 §2-A′ 段 3 的浏览器实测**（唯一未闭合门禁）——命令见 §2-A′ 段 3，不在此重复。
    预期 B 场景 `cookie_sent=true`。**这一步不通就不要往下走**（否则登录态在真机必丢）。
 
-2. 拿到真实域名后出首个 APK：
-   ```bash
-   cd ai-music-platform/frontend
-   node scripts/build-apk.mjs --api=https://api.<你的域名>
-   cd ../..
-   node scripts/build-music-config.js --domain=<你的域名>
-   npx cap sync android && npm run build:apk-release
-   ```
-   ⚠️ 之后若要回到 FLOW 主 App，必须 `node scripts/build-config.js android --market=hk`
-   （音乐脚本会覆盖 `capacitor.config.json` / `build.gradle` / `strings.xml`）。
+2. ~~拿到真实域名后出首个 APK~~ —— **命令已失效，勿照抄**。
+   本文写的 `scripts/build-music-config.js` + 根 `npx cap sync android` 指向的 `mobile/` 管线已不存在；
+   现行入口是 `native/` 工作区（`npm run sync:android` / `npm run build:apk:release`，
+   `webDir` = `../frontend/out`）。**具体命令以 `PLAN_MOBILE_CROSSPLATFORM_2026-09-29.md` 为准。**
+   静态导出本身仍可用：`cd frontend && node scripts/build-apk.mjs --api=https://api.<你的域名>`。
 
 3. 阶段 1 功能联调：生成 / 库 / 广场 / 播放 / 试听门控；后台播放 + 锁屏控制 + 媒体通知；分享。
 
 已知缺口（不阻塞打包，但阻塞上架）：
 - **Mureka 403 地域封锁**未在中国香港出口实测（P0-CRIT）。
 - ~~`bump-version.js` 尚未支持音乐版本线（`version.json.music`），需补；否则 Play 上传会因 versionCode 未递增被拒。~~
-  ✅ **已补齐（2026-09-26）**：新增 `--app=music`，走 `version.json.music[.variants.<key>]` 独立版本线，
-  与 flow 版本线互不影响。用法 `node scripts/bump-version.js patch --app=music --variant=play`
-  （或 `npm run version:music:patch`）。回归测试 `tests/test_bump_version_music_line.py`。
-  注意：不写 `--app=music` 时 `--app` 默认 `flow`，过去会**静默把版本加到 FLOW 本体线上**（不是报错），
-  现已由参数校验 + 测试守住两条线互不干扰。
-- 同一根因的第二处（产物命名）：`collect-build.js` 的产物前缀按 `appByAppId()` 区分
-  `flow-ai-*` / `flow-music-*`，否则音乐 Play 包与 FLOW 本体 Play 包**文件名完全相同**，
-  会出现「做的是音乐包、上传的是本体包」。
+  ✅ 当时（2026-09-26）已补齐：新增 `--app=music`，走 `version.json.music[.variants.<key>]` 独立版本线。
+  > ⚠️ **订正（2026-10-16）**：该实现位于 FLOW 仓库，**`version.json`、`scripts/bump-version.js`、
+  > `tests/test_bump_version_music_line.py` 均不在本仓库**——在本仓库无法复核，不要按此路径找文件。
+  > 移动端版本线现状与做法以 `PLAN_MOBILE_CROSSPLATFORM_2026-09-29.md` 为准。
+- ~~同一根因的第二处（产物命名）：`collect-build.js` 的产物前缀按 `appByAppId()` 区分
+  `flow-ai-*` / `flow-music-*`~~ —— **该文件不在本仓库**，本条无法在当前代码上复核；
+  若仍需要产物命名区分，应在 `native/` 工作区的构建脚本里重新落地，不要假定它已存在。

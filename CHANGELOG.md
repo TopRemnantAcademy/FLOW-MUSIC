@@ -18,6 +18,70 @@
 
 ## [未发布]
 
+区间：`d003c81`（`0.2.0` 收尾）+ 合并提交 `141b87c` 之后，到 `ff0e101`（2026-10-16）为止的
+**全部真实提交**（`git log --oneline d003c81..ff0e101`，去掉合并提交后 44 条）。
+括号内为 PR 号或提交短 hash，逐条可 `git show` 复核。**本段尚未发布，日期待发布时再填。**
+
+### 新增
+
+- **产品分析看板**：只读聚合视图，无新表、无迁移 (`c3abdd1`)
+- **通知通道**：邮件 + Web Push 双通道，零迁移落地 (`18f5a51`)
+- **开发者 API / Webhook**：个人访问令牌 + 出站 SSRF 守卫 + HMAC 签名投递 (`297a2fe`)
+- **公开资料页**：他人主页可访问，并修掉「带 token 的请求被静默降级为匿名」的问题 (#83)
+- **可访问性**：全站键盘可达、ARIA 标注、对比度达标，配套 lint 与回归用例 (#92)
+- **应用内更新日志**：`/release-notes` 页面 (#95)
+- **多语言**：韩 / 中 / 英三语本地化，含词典一致性自检与 APK 静态导出修复 (#85)
+- **后台运营扩展**：用户管理、财务结算、特性开关 (#91)
+- **批量导出**：多选导出 zip + CSV (#94)
+- **歌词能力**：歌词编辑器 + LRC 导出 / 导入 (#80)
+- **播放器进阶**：波形 seek、A-B 重复、无状态分享链接 (#81)
+- **PWA**：可安装 + 离线可用 (#86)
+- **独立库 + 窄桥接架构**：token 交换 + `user_links`，不再跨库外键 (#72)
+- **PG 就绪**：`psycopg[binary]` 驱动 + 按方言分支的 `connect_args` + Alembic 方言兼容 (`b454687`)
+- **部署自动化**：香港服务器代码同步与 PG schema 切换脚本化 (#107)
+- **音乐重建（OMR）工具链**：版本命名规范与批准本冻结 (#13)、和弦记录与规范化 (#50)、
+  编曲前确认校验 (#48)、MIDI 生成 鼓/贝斯/和弦 (#52/#53/#54)、段落标注 (#51)、
+  编曲提示词模板与 Agent 红线 (#57)、混音最小检查 (#58)、成品 WAV + 分轨 stem + 哈希 manifest (#59)、
+  QC 文件校验 (#60)、G1 图像质量门 (#31)、G4 最终 QC 检查表、G1–G4 阶段标准与交付物映射
+  (`f67714a`、`214e410`、`ff0e101`、`f5e889a`、`643c61c`、`f61cf2e`、`c35912d`、`54f4362`、`fbc50d0`、`663c90d`、`c50309d`、`d6dc48a`、`25f000c`、`d56c517`)
+- **工具与文档**：CodeBuddy CLI 安装与真包名、MCP 连接验证、安装版本日志、诊断速查表、
+  常见失败与恢复流程 (`6492c53`、`1d1426a`、`de58e12`)
+
+### 变更
+
+- **数据库**：`alembic upgrade head` 在真实 PostgreSQL 上可从零建表；迁移链方言无关化 (`6771963`、#106)
+- **测试基线**：后端从 `66 passed / 3 skipped` 扩到 **`948 passed / 7 skipped / 0 failed`**（收集 955 项）；
+  新增 OMR 乐谱→音乐端到端沙箱 mock（52 项）与 APK Cookie 同站契约护栏（9 项）
+  (`3ff649b`、`test_apk_cookie_samesite.py`)
+
+### 修复
+
+- 修复 `main` 迁移链出现多个 head，`alembic upgrade head` 从零执行直接失败 (#104)
+- 修复 `tests/conftest.py` 的 `REPO_ROOT` 未定义导致 `test_cli` 无法收集 (`b88d88a`、#51)
+- 修复 2 个过期测试断言（引擎注册判定、JSON 分隔符语义） (`c8846e0`)
+- 修复带 token 的请求被静默降级为匿名用户 (#83)
+- 修复未定义的主题 token，统一品牌色 (`a262221`)
+
+### 安全
+
+- 出站 Webhook 投递增加 SSRF 守卫与 HMAC 签名校验 (`297a2fe`)
+- 上传文件增加文件头魔数校验、体积上限与限流（`routers/songs.py`、`tests/test_upload_security.py`）
+
+### 文档
+
+- 新增 `docs/MOBILE_THIRD_PARTY_NOTICES_ANDROID.md`（`native/package.json` + Gradle 实测推导，非模板）
+- 新增 `docs/PLAN_MUSIC_APP_2026-09-28.md`、`docs/PLAN_MOBILE_CROSSPLATFORM_2026-09-29.md`
+  （移动端跨平台方案与遗漏审计）
+- 新增 `docs/A11Y_CHECKLIST.md`、`docs/PWA_GAP018_RUNBOOK.md`、`docs/MINIMAX_API_COMPLIANCE_2026-09-26.md`
+- 新增 `docs/COLOCATION_*`（同机部署方案、验证、缺陷轮次、Mock 测试计划）与
+  `docs/SECURITY_SCAN_STALE_2026-09-25*.md`（过期安全扫描留痕）
+- 新增 `docs/DEPLOY_HK_CHECKLIST_2026-09-14.md`、`docs/MUSIC_PLATFORM_MIGRATION_2026-09-10.md`、
+  `docs/MUSIC_TAB_MERGE_PLAN_2026-09-21.md`、`docs/PLAN_ACCESS_CONTROL_2026-09-11.md`
+- 新增 `docs/PLAN_PLAZA_SOCIAL_2026-09-03.md`、`docs/CHINA_PAYMENT_ACQUIRING_DECISION_2026-09-04.md`
+- **本段订正**（#154）：`.impeccable.md` 技术栈对齐实测（Next 16 / Tailwind 4）、
+  `MOCK_TEST.md` 测试规模刷新为 948 passed、`docs/PLAN_MUSIC_APK_2026-09-13.md`
+  标注已失效路径（`mobile/` → `native/`）并指向后继方案
+
 ## [0.2.0] - 2026-10-12
 
 本仓库自 `74d0be3`（平台从 FLOW ai-music-platform 子树抽出）起，到 `d003c81`

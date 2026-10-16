@@ -1,9 +1,19 @@
 # MOCK_TEST.md — 后端 Mock 测试方案
 
 > 目标：在不依赖真实 Suno API / 对象存储 / 外部服务的条件下，验证核心业务链路与异常路径。
-> 结果：`python -m pytest tests/ -q` → **66 passed, 3 skipped**（2026-08-29 实测）。
-> - 66 passed 覆盖：健康/注册登录/生成轮询/机审/extend_cover_remix/sync_flow/alembic/explore/play/auto_approve/后台控制（引擎·路由·计费 CRUD 与 DB 实时生效）/引擎路由骨架（resolve_engine 回退与启用后实时路由）/安全打磨（弱密码·分页·owner·可见性）/音频后处理 loudness 归一与 F4 分离报错/解析。
-> - 3 skipped：`test_postprocess.py` 中的 `test_master`/`test_denoise`/`test_run_pipeline`，依赖可选重型音频库 `pedalboard`、`noisereduce`（requirements.txt 标注「按需启用」）。mock 上线门禁用 `@pytest.mark.skipif` 自动跳过；装上这两个库后这 3 项自动转为 passed（共 69 passed），无需改代码。
+> 结果：`python -m pytest tests/ -q` → **948 passed, 7 skipped, 0 failed**（2026-10-16 实测，本文件基线）。
+> - 规模：`tests/` 下 65 个 `test_*.py` + `tests/omr_e2e/` 8 个模块，pytest 收集 **955 项**（948 passed + 7 skipped）。
+> - 7 skipped **全部是环境门禁**，装上依赖即自动转为 passed，无需改代码：
+>   - 4 项 `tests/test_pg_readiness.py`：未设 `TEST_PG_URL`（本机无 PostgreSQL）。
+>   - 3 项 `tests/test_postprocess.py`：未装可选重型音频库 `pedalboard` / `noisereduce`（`requirements.txt` 标注「按需启用」）。
+> - 覆盖范围早已超出早期版本，按域粗分：认证与安全（Cookie/JWT 守卫/SSRF/上传/弱密码）、生成与轮询、
+>   机审与权利、explore/play、库与批量导出、计费与钱包、后台控制（引擎·路由·计费·运营）、
+>   PG 迁移与方言、APK Cookie 契约、OMR 端到端（`tests/omr_e2e/`）等。
+> - 复现环境必须与 `backend/requirements.txt` 对齐，否则会出现**与代码无关的假失败**。本次踩到两处：
+>   1. `bcrypt` 装了 5.x 会 `ValueError: password cannot be longer than 72 bytes`（须 `bcrypt==4.0.1`）；
+>   2. 缺 `psycopg` 会让 `test_postgres_connect_args_never_carry_sqlite_only_kwargs` 的
+>      子进程 import 直接 `RuntimeError`（须 `pip install 'psycopg[binary]'`）。
+>   另 `test_loudness_normalize` / `test_extract_peaks_from_generated_wav` 需要 PATH 上有 `ffmpeg`。
 
 ---
 
@@ -46,7 +56,9 @@ python -m pytest tests/ -q
 
 ---
 
-## 4. 覆盖矩阵
+## 4. 覆盖矩阵（早期核心用例）
+
+> 下表是**立项阶段**的核心用例清单，**不是**当前全量（当前 948 passed）。全量清单以 `backend/tests/` 为准；下表保留作为「核心链路长什么样」的索引。
 
 | 测试 | 验证点 |
 |------|--------|
@@ -95,7 +107,8 @@ python -m pytest tests/ -q
 - Alembic 迁移 `migrations/versions/659f128c2856_add_is_public_and_play_count.py`（autogenerate），`alembic upgrade head` 应用到 `app.db` 且 `alembic check` 零漂移；`tests/test_alembic.py` 在临时库 `upgrade head` 后断言表 / 列 == 元数据（自动覆盖新列）。
 - 后端：`GET /api/songs/explore` 过滤 `is_public + moderation_status='approved' + status='completed'`，按 `play_count desc, id desc` 排序，支持 `limit/offset`，**匿名可访问**；`POST /api/songs/{id}/play` 计数 +1（自己或已公开歌曲均可计数）。
 - **E4 自动审批**：`_process_song` 在 `result.status=='completed'` 且当前 `pending` 时置 `moderation_status='approved'`（提交文本已通过 `check_lyric`）；不覆盖 admin 已驳回。修复「生成完成不流转」缺口。
-- 前端：`app/explore/page.tsx`（拉取 explore + 播放 +1）、`CreateForm` 加「公开发布到发现页」勾选、`lib/api.ts` 补 `SongView.is_public/play_count` 与 `api.explore()/api.play()`、首页加「发现公开作品」入口。
+- 前端：`app/plaza/page.tsx`（拉取列表 + 播放 +1；**原 `app/explore/page.tsx` 已改名并入「院子」**）、`components/CreateForm.tsx` 加「公开发布到发现页」勾选、`lib/api.ts` 补 `SongView.is_public/play_count` 与 `api.play()`。
+  > 订正（2026-10-16）：`/api/songs/explore` 已被 `/api/plaza` 取代（plaza 是严格超集，尊重排序且带互动字段）。`api.explore()` 在 `frontend/lib/api.ts` 里仅作 legacy 兼容保留，**全站无消费者**，新 UI 一律用 `api.plaza()`。
 - 路由顺序坑：`GET /explore` 必须在 `GET /{song_id}` 之前注册，否则被参数路由抢匹配且 `get_current_user` 先于路径参数类型转换执行 → 返回 401。已按精确路由优先原则修正。
 
 ---
@@ -105,7 +118,7 @@ python -m pytest tests/ -q
 - **编排层（Suno）**：`MockProvider` 返回固定完成态，不验证真实字段；`suno.py` 已按 open.suno.cn 协议对接真实 API，并对其它服务响应做容错（`MUSIC_PROVIDER=mock` 可完全绕过）。
 - **对象存储（S3/COS）**：`sync-flow` 在 storage 未配置时降级用 Suno 原始 `audio_url`；测试不配置 storage。
 - **音频机审**：当前仅敏感词（`blocklist.txt`）；ASR 转写 + 审核模型为 TODO（见 PROMPT.md 模块 3）。
-- **限流 / 配额**：测试中关闭限流（`enable_rate_limit=False`）以保证确定性；生成突发限流（429）与每日配额（402）已在 P1 实现，并经 `test_rate_limit_generate_throttles` / `test_daily_quota_blocks_after_limit` 验证；支付尚未实现。
+- **限流 / 配额**：测试中关闭限流（`enable_rate_limit=False`）以保证确定性；生成突发限流（429）与每日配额（402）已在 P1 实现，并经 `test_rate_limit_generate_throttles` / `test_daily_quota_blocks_after_limit` 验证。支付已接真实供应商与钱包账本（见 `tests/test_billing.py`、`tests/test_wallet_track_e2e.py`、`tests/test_webhook.py`），不再是「尚未实现」。
 
 ---
 
@@ -132,5 +145,6 @@ python -m pytest tests/ -q
 
 - `blocklist.txt` 已扩充为多类别示例词库（33 词），生产须接入专业内容安全 API。
 - `suno.py` 已对接 open.suno.cn；后续可补充 sunoapi.org / gcui-art 的独立断言，以及真实 API 的端到端联调（需 SUNO_API_KEY）。
-- 补充「生成失败 → `failed` 分支」与并发提交的测试。
-- 前端 `npm install && npx tsc --noEmit` 语法校验（需本地或 CI 环境执行）。
+- 「生成失败 → `failed` 分支」已由 `tests/test_stage2_mock_e2e.py` 覆盖；并发提交见 `tests/test_quota_toctou.py`。
+- PG 真库用例需在部署机执行：`TEST_PG_URL=postgresql+psycopg://flow_music:***@127.0.0.1:5432/flow_music python -m pytest tests/test_pg_readiness.py -q`。
+- 可选重型音频依赖（`pedalboard` / `noisereduce`）在 mock 环境默认跳过；CI 是否装上以 `backend/requirements.txt` 为准。
