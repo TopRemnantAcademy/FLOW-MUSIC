@@ -1,0 +1,21 @@
+# 对外 OMR/质检服务栈 —— 依赖清单（每行**必须**标注许可：check_licenses.py 强制）
+#
+# 规则：本栈**只允许** MIT / BSD / Apache / LGPL / ISC / MPL / PSF 类。
+#       **禁止** AGPL / GPL（对外网络服务的源码披露与传染风险），
+#       因此不得引入 audiveris / homr（两者均为 AGPL-3.0）。
+# 依据：00_docs/plan/10_oss_best_stack_plan.md §2/§3/§5
+#
+# 安装：pip install -r music_rebuild_project/deploy/omr-qa/requirements-omr.txt
+
+oemer==0.1.8                      # license: MIT          (OMR 主引擎；需 bbox.find_lines 补丁)
+onnxruntime==1.20.0               # license: MIT          (钉版：1.31 对 oemer 老检查点负 pad 报错)
+rapidocr-onnxruntime==1.2.3       # license: Apache-2.0   (OCR：文字/字高/页码/内容余量)
+pytesseract==0.3.13               # license: Apache-2.0   (OCR 第二票；需系统 tesseract-ocr)
+docaligner-docsaid==1.1.1         # license: Apache-2.0   (G1-3 裁切：文档四角)
+music21>=9.1                      # license: BSD-3-Clause (MusicXML 解析/小节-音长校验)
+numpy                             # license: BSD-3-Clause
+Pillow                            # license: MIT-CMU
+opencv-python-headless            # license: Apache-2.0
+Shapely                           # license: BSD-3-Clause
+pyclipper                         # license: MIT
+PyYAML                            # license: MIT
