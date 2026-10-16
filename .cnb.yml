@@ -1,26 +1,32 @@
 # .cnb.yml — 仓库根流水线（⚠ 必须在**仓库根**：放 `.cnb/` 目录内会注册失败 [CONFIG_YAML_EMPTY]）
 #
 # 职责分工（见 issue #165）：
-#   ① 快活门禁（fast，目标 < 60s）：单测 + 静态许可断言。挂 pull_request 与 push，
+#   ① 快活门禁 gate-fast（目标 < 60s）：单测 + 静态许可断言。挂 pull_request 与 push main，
 #      每次提交都跑 —— 这类断言必须**永远自动执行**，否则回归只能靠人肉发现。
-#   ② 重活门禁（heavy）：装对外 OMR 栈（~2.4 min）→ oemer 补丁 → 动态许可 → CV 冒烟。
+#   ② 重活门禁 gate-heavy：装对外 OMR 栈（~2.4 min）→ oemer 补丁 → 动态许可 → CV 冒烟。
 #      **只挂 api_trigger**（手动触发），不进 push 路径，避免每次提交都装 79 个包。
 #
 # 硬约束：门禁失败必须非零退出。本文件**禁止**出现 `|| true` / `allowFailure: true`
 #         之类吞错写法 —— 那等于把门禁变成"绿灯装饰"。
 #
+# 重活放在 `"$"` 兜底分支下（`api_trigger` 按**触发分支自身**的配置解析，
+# 放 main 下就只能从 main 触发）。因 main 已被 glob 命中，`"$"` 实际覆盖其余分支。
+#
 # 触发方式（重活）：
-#   cnb build start-build --repo flow.237/FLOW-MUSIC --branch feat/165-ci-gate \
+#   cnb build start-build --repo flow.237/FLOW-MUSIC --branch <分支> \
 #     --event api_trigger --title "165 heavy"
+#
+# 复用片段：快活门禁的脚本在 PR 与 push main 两处一致，用 YAML 锚点避免漂移。
+# （锚点只复用 stages，docker 各自声明 —— 保持配置对读者扁平。）
 
-# ---- 快活门禁：PR / push main 自动执行 --------------------------------------
+# ---- 快活门禁（PR / push main 自动执行）--------------------------------------
 "$":
   pull_request:
     - name: gate-fast
       docker:
         image: python:3.12-slim
       stages:
-        - name: 单测（G1 自动判定 + 许可断言 + 图像门）
+        - name: 单测（G1 自动判定 + 许可断言 + 图像门 + CV 冒烟契约）
           script: |
             set -eu
             pip install -q pytest
@@ -36,29 +42,7 @@
             python music_rebuild_project/tools/checks/check_licenses.py \
               --requirements music_rebuild_project/deploy/omr-qa/requirements-omr.txt
 
-main:
-  push:
-    - name: gate-fast
-      docker:
-        image: python:3.12-slim
-      stages:
-        - name: 单测（G1 自动判定 + 许可断言 + 图像门）
-          script: |
-            set -eu
-            pip install -q pytest
-            python -m pytest \
-              music_rebuild_project/tools/checks/tests/test_g1_auto.py \
-              music_rebuild_project/tools/checks/tests/test_check_licenses.py \
-              music_rebuild_project/tools/checks/tests/test_g1_image_quality.py \
-              music_rebuild_project/deploy/omr-qa/tests/test_smoke_cv.py \
-              -q -p no:cacheprovider
-        - name: 静态许可门禁（对外栈禁 AGPL/GPL）
-          script: |
-            set -eu
-            python music_rebuild_project/tools/checks/check_licenses.py \
-              --requirements music_rebuild_project/deploy/omr-qa/requirements-omr.txt
-
-  # ---- 重活门禁：仅手动 api_trigger（不挂 push）------------------------------
+  # ---- 重活门禁：仅手动 api_trigger（不挂任何 push 路径）----------------------
   api_trigger:
     - name: gate-heavy
       docker:
@@ -93,3 +77,25 @@ main:
             set -eu
             python music_rebuild_project/deploy/omr-qa/smoke_cv.py \
               music_rebuild_project/02_source/song01/preprocessed/song01_preprocessed_v001.jpeg
+
+main:
+  push:
+    - name: gate-fast
+      docker:
+        image: python:3.12-slim
+      stages:
+        - name: 单测（G1 自动判定 + 许可断言 + 图像门 + CV 冒烟契约）
+          script: |
+            set -eu
+            pip install -q pytest
+            python -m pytest \
+              music_rebuild_project/tools/checks/tests/test_g1_auto.py \
+              music_rebuild_project/tools/checks/tests/test_check_licenses.py \
+              music_rebuild_project/tools/checks/tests/test_g1_image_quality.py \
+              music_rebuild_project/deploy/omr-qa/tests/test_smoke_cv.py \
+              -q -p no:cacheprovider
+        - name: 静态许可门禁（对外栈禁 AGPL/GPL）
+          script: |
+            set -eu
+            python music_rebuild_project/tools/checks/check_licenses.py \
+              --requirements music_rebuild_project/deploy/omr-qa/requirements-omr.txt
