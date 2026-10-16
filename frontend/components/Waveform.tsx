@@ -16,8 +16,11 @@
  *      （`ACAO: *` + include 是非法组合）。
  *   3. 连 wavesurfer 自带的 `load(url)` 也一样死在 CSP（实测 `Failed to fetch`、canvas 数 = 0）
  *      —— 它只是把 fetch 包进库里，不改变 CSP 事实。
- *   4. CSP 唯一放行音频的是 `media-src 'self' blob: https:`（`<audio src>` 能播），
+ *   4. CSP 放行音频的是 `media-src 'self' blob: {白名单主机}`（`<audio src>` 能播），
  *      但 `<audio>` **没有**任何「读原始 PCM」的 API。
+ *      （2026-10-16 #153 起，这里的 `https:` 通配已收紧为显式主机白名单。
+ *        这也再次印证第 1 条：`fetch` 走 connect-src、播放走 media-src，
+ *        两条指令各管一段，别指望收紧一条能顺带管住另一条。）
  *
  * 结论：峰值改由后端 ffmpeg 抽好（`GET /api/share/songs/{token}/peaks`，同源、CSP 放行、
  * 不白拉整曲），前端拿到一个 `number[]` 直接画 canvas。这也顺带把「渲染」这件事

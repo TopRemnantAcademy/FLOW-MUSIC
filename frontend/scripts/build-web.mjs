@@ -85,7 +85,8 @@ function walk(dir) {
   return out;
 }
 
-const metas = metaEquivalent(apiBase, connectOriginsFrom(consts));
+const cdnBase = process.env.NEXT_PUBLIC_STORAGE_PUBLIC_BASE || "";
+const metas = metaEquivalent(apiBase, connectOriginsFrom(consts), cdnBase);
 const htmls = walk(OUT).filter((f) => f.toLowerCase().endsWith(".html"));
 if (htmls.length === 0) die("HTML 산출물이 0개입니다 — 사이트에 인터페이스가 없습니다");
 

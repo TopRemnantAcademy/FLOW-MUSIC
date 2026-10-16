@@ -218,7 +218,8 @@ for (const p of [path.join(OUT, "admin"), path.join(OUT, "admin.html")]) {
 
 // ── 3. <meta http-equiv> CSP 주입 (정적 익스포트가 잃어버린 보안 헤더 보완) ──
 const htmls0 = walk(OUT).filter((f) => f.toLowerCase().endsWith(".html"));
-const metas = metaEquivalent(apiBase, connectOriginsFrom(publicConsts));
+const cdnBase = process.env.NEXT_PUBLIC_STORAGE_PUBLIC_BASE || "";
+const metas = metaEquivalent(apiBase, connectOriginsFrom(publicConsts), cdnBase);
 let injected = 0;
 for (const file of htmls0) {
   let html = fs.readFileSync(file, "utf8");

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
-"test:contract": "node tests/mureka-ui-contract.test.cjs && node tests/gap013-player.test.cjs",
+"test:contract": "node tests/mureka-ui-contract.test.cjs && node tests/gap013-player.test.cjs && node tests/csp-media-allowlist.test.mjs",
     "typecheck": "tsc --noEmit",
     "verify:i18n": "node scripts/verify-i18n.mjs",
     "scan:i18n": "node scripts/scan-hardcoded-i18n.mjs",

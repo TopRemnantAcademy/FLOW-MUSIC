@@ -16,6 +16,41 @@
  */
 "use strict";
 
+/** 拼接 origin 列表（去重、保序、丢弃空值）。`*` 与 `https:` 这类**通配**一律只允许显式传入。 */
+function origins(...lists) {
+  const out = [];
+  for (const list of lists) {
+    for (const raw of list || []) {
+      const o = String(raw || "").trim().replace(/\/+$/, "");
+      if (o && !out.includes(o)) out.push(o);
+    }
+  }
+  return out;
+}
+
+/**
+ * 미디어(오디오/이미지) 호스트 화이트리스트 — **SSoT**.
+ *
+ * 왜 여기(헤더 모듈)에 두나:
+ *   `img-src`/`media-src` 는 "이 프로젝트가 실제로 쓰는 미디어 출처"의 함수다.
+ *   백엔드 CORS(`app/config.py:cors_origins`)와 **의미가 다른 별개 목록**이므로
+ *   같은 파일에 섞으면 둘 중 하나가 반드시 어긋난다(교집합 = API 원본뿐).
+ *
+ * 포함 근거(전부 repo 안에서 실측 가능, 지어낸 값 없음):
+ *   · apiBase           — `SongOut.audio_url` 은 GAP-019 미적용 시 상대경로,
+ *                         적용 시 API 와 같은 호스트의 `/api/songs/{id}/download` 등.
+ *   · STORAGE_PUBLIC_BASE — 자체 CDN(음악/커버). 없으면 같은 출처·API 출처로 커버된다.
+ *   · cdn.mureka.ai     — **주 엔진** Mureka 가 내려주는 audio_url/cover_url 호스트
+ *                         (PRO_MUSIC_PLATFORM_GAP_PLAN.md:325 에 도메인 명시).
+ *                         storage 미설정 배포(=현행 prod 기본)의 실제 재생 경로다.
+ *
+ * ⚠ 여기에 도메인을 추가할 때: 실제로 그 호스트의 미디어를 **렌더**하는 코드가 있어야 한다.
+ *   "혹시 몰라서" 넣는 항목은 그 순간 `https:` 통짜 허용과 다를 바 없어진다.
+ */
+function mediaHosts(apiBase, cdnBase) {
+  return origins([apiBase], [cdnBase], ["https://cdn.mureka.ai"]);
+}
+
 /**
  * connect-src 출처 목록 정규화: 공백/빈 값 제거 + 중복 제거(순서 보존).
  * 빈 문자열을 그대로 붙이면 `connect-src 'self' ` 처럼 지시문이 비어 보이고,
@@ -35,26 +70,36 @@ function dedupeOrigins(origins) {
 
 /**
  * CSP 정책 문자열 생성.
- * @param {string} apiBase -런타임 API 원본(예: https://api.example.com). connect-src 에만 허용.
+ * @param {string} apiBase -런타임 API 원본(예: https://api.example.com). connect-src/media-src/img-src 에 허용.
  * @param {string[]} [extraConnectOrigins] -추가 connect-src 출처(예: 문의용 FLOW 主站, 埋点 엔드포인트).
  *   프론트가 **빌드 시점에 굽는** 교차 출처 fetch 대상. 여기 안 넣으면 Web 에서
  *   CSP 가 요청을 **조용히 차단** 한다(콘솔만 에러, 기능은 죽은 채로 보임).
+ * @param {string} [cdnBase] -자체 CDN/오브젝트 스토리지 공개 베이스(`STORAGE_PUBLIC_BASE`).
+ *   음악·커버가 API 와 **다른 호스트**로 나갈 때만 필요하다.
  */
-function contentSecurityPolicy(apiBase, extraConnectOrigins = []) {
+function contentSecurityPolicy(apiBase, extraConnectOrigins = [], cdnBase) {
   // 'unsafe-eval' 은 Next dev(HMR/React Refresh) 에만 필요하고 **프로덕션 산출물에는 불필요**.
   // → 개발에서만 붙여 프로덕션 CSP 를 실제로 강화한다(항상 넣으면 CSP 무력화).
   const scriptSrc = ["'self'", "'unsafe-inline'"];
   if (process.env.NODE_ENV !== "production") scriptSrc.push("'unsafe-eval'");
+
+  const api = origins([apiBase])[0] || "";
+  const media = mediaHosts(apiBase, cdnBase);
 
   return [
     "default-src 'self'",
     // Next.js 인라인 부트스트랩 스크립트 → 'unsafe-inline' 불가피(nonce 화는 별도 과제).
     "script-src " + scriptSrc.join(" "),
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: https:",
+    // [SEC] 2026-10-16: 종전 `img-src 'self' data: blob: https:` 의 **통짜 `https:`** 를 제거.
+    //   `https:` 하나만 남아 있어도 "임의의 https 호스트에서 이미지/오디오를 받아도 된다"는
+    //   뜻이라, connect-src 로 좁혀 둔 화이트리스트가 실질적으로 무력했다(이미지/오디오
+    //   경유 유출·추적 픽셀·외부 스트리밍 모두 통과). data:/blob: 은 유지한다 —
+    //   후자는 `URL.createObjectURL`(미리듣기·다운로드), 전자는 인라인 아이콘/파비콘에 실사용.
+    "img-src " + ["'self'", "data:", "blob:", ...media].join(" "),
     "font-src 'self' data:",
-    "connect-src 'self' " + [apiBase, ...dedupeOrigins(extraConnectOrigins)].filter(Boolean).join(" "),
-    "media-src 'self' blob: https:",
+    "connect-src 'self' " + [api, ...dedupeOrigins(extraConnectOrigins)].filter(Boolean).join(" "),
+    "media-src " + ["'self'", "blob:", ...media].join(" "),
     "object-src 'none'",
     "base-uri 'self'",
     "frame-ancestors 'none'",
@@ -62,13 +107,13 @@ function contentSecurityPolicy(apiBase, extraConnectOrigins = []) {
 }
 
 /** next.config.js headers() 용 — 실제 HTTP 응답 헤더. */
-function securityHeaders(apiBase, extraConnectOrigins = []) {
+function securityHeaders(apiBase, extraConnectOrigins = [], cdnBase) {
   return [
     { key: "X-Content-Type-Options", value: "nosniff" },
     { key: "X-Frame-Options", value: "DENY" },
     { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
     { key: "Permissions-Policy", value: "geolocation=(), microphone=(), camera=()" },
-    { key: "Content-Security-Policy", value: contentSecurityPolicy(apiBase, extraConnectOrigins) },
+    { key: "Content-Security-Policy", value: contentSecurityPolicy(apiBase, extraConnectOrigins, cdnBase) },
     // HSTS: HTTPS 배포에서만 의미가 있어承载层(Caddy) 가 내리는 것을 권장.
     // 여기서는 중복 전송을 피하기 위해 넣지 않는다(로컬 http 개발 시 브라우저가 기억해버림).
   ];
@@ -81,9 +126,9 @@ const META_UNSUPPORTED = ["frame-ancestors", "sandbox", "report-uri", "report-to
  * APK 정적 HTML 에 주입할 <meta http-equiv> 목록(headers() 의 등가물).
  * @returns {Array<{httpEquiv: string, content: string}>}
  */
-function metaEquivalent(apiBase, extraConnectOrigins = []) {
+function metaEquivalent(apiBase, extraConnectOrigins = [], cdnBase) {
   const out = [];
-  for (const h of securityHeaders(apiBase, extraConnectOrigins)) {
+  for (const h of securityHeaders(apiBase, extraConnectOrigins, cdnBase)) {
     if (h.key === "Content-Security-Policy") {
       // 지원되지 않는 지시문을 제거한 CSP 만 meta 로 내린다(남겨도 무시되지만,
       // "적용되는 줄 알았는데 무시됨" 오해를 없애기 위해 명시적으로 걷어낸다).
@@ -102,4 +147,11 @@ function metaEquivalent(apiBase, extraConnectOrigins = []) {
   return out;
 }
 
-module.exports = { contentSecurityPolicy, securityHeaders, metaEquivalent, dedupeOrigins, META_UNSUPPORTED };
+module.exports = {
+  contentSecurityPolicy,
+  securityHeaders,
+  metaEquivalent,
+  mediaHosts,
+  dedupeOrigins,
+  META_UNSUPPORTED,
+};
