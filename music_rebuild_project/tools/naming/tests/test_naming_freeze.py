@@ -586,13 +586,19 @@ def test_tests_use_tempdir_not_repo():
     """测试自身也只写临时目录：这条断言的是"测试的输入是它自己造的"。"""
     with tempfile.TemporaryDirectory() as d:
         assert os.path.isdir(d)
-    # 仓库数据目录必须仍然只有 README（本测试运行前后都不该多出文件）
+    # 仓库数据目录在测试运行前后**不应因测试而多出文件**；
+    # 但真实 song_id 子目录是合规数据落位（README 02_source/<song_id>/），须放行。
     repo_data = Path(__file__).resolve().parents[3]
     for sub in ("04_approved", "02_source"):
         d = repo_data / sub
-        if d.exists():
-            entries = {p.name for p in d.iterdir()}
-            assert entries <= {"README.md", ".gitkeep"}, f"{sub}/ 被写入物污染：{entries}"
+        if not d.exists():
+            continue
+        entries = set()
+        for p in d.iterdir():
+            if p.is_dir() and naming.validate(p.name, kind="song_id") == []:
+                continue  # 合法 song_id 数据目录，非测试污染
+            entries.add(p.name)
+        assert entries <= {"README.md", ".gitkeep"}, f"{sub}/ 被写入物污染：{entries}"
 
 
 # ===========================================================================

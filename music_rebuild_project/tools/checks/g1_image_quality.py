@@ -159,12 +159,29 @@ def check_g1_9(source_dir: Path, files: list[dict]) -> tuple[str, str]:
     return "PASS", f"全部 {len(rels)} 个文件哈希与 source_manifest.txt 一致"
 
 
-def evaluate_path(path: Path, cfg: Config) -> dict:
-    """对单文件跑 G1-1 与 G1-8（G1-9 是目录级，另算）。"""
+def evaluate_path(path: Path, cfg: Config, auto: bool = False, provider=None) -> dict:
+    """对单文件跑 G1-1 与 G1-8（G1-9 是目录级，另算）。
+
+    ``auto=True`` 时追加 **实测自动判定**：G1-1L(线距)/G1-2/G1-3/G1-5/G1-6/G1-7。
+    引擎不可用 → 该项保持 ``SKIP`` 并注明，绝不冒充 PASS（P5）。
+    """
     c = classify_file(path)
     g1_1 = check_g1_1(c, cfg)
     g1_8 = check_g1_8(c)
+    checks = {
+        "G1-1": {"status": g1_1[0], "detail": g1_1[1]},
+        "G1-8": {"status": g1_8[0], "detail": g1_8[1]},
+    }
+    auto_metrics = None
+    if auto:
+        from checks import g1_auto  # 懒加载：仅 --auto 时引入（重依赖在 g1_auto 内再懒加载）
+        ac = g1_auto.auto_checks(path, provider=provider)
+        auto_metrics = ac.pop("_metrics", None)
+        checks.update(ac)
     file_status = _worse(g1_1[0], g1_8[0])
+    for k in AUTO_FILE_KEYS:
+        if k in checks:
+            file_status = _worse(file_status, checks[k]["status"])
     return {
         "path": str(path),
         "container": c.get("container"),
@@ -173,15 +190,14 @@ def evaluate_path(path: Path, cfg: Config) -> dict:
         "height": c.get("height"),
         "dpi": c.get("dpi"),
         "sha256": c.get("sha256"),
-        "checks": {
-            "G1-1": {"status": g1_1[0], "detail": g1_1[1]},
-            "G1-8": {"status": g1_8[0], "detail": g1_8[1]},
-        },
+        "auto_metrics": auto_metrics,
+        "checks": checks,
         "status": file_status,
     }
 
 
-def evaluate_dir(directory: Path, cfg: Config) -> dict:
+def evaluate_dir(directory: Path, cfg: Config, auto: bool = False, provider=None,
+                 expected_pages: int | None = None) -> dict:
     files = []
     errors = []
     for f in sorted(directory.rglob("*")):
@@ -190,26 +206,63 @@ def evaluate_dir(directory: Path, cfg: Config) -> dict:
         if f.name == "source_manifest.txt":
             continue
         try:
-            files.append(evaluate_path(f, cfg))
+            files.append(evaluate_path(f, cfg, auto=auto, provider=provider))
         except (ValueError, OSError) as e:
             errors.append({"path": str(f), "error": str(e)})
     g1_9 = check_g1_9(directory, files)
-    return {
+    rep = {
         "root": str(directory),
         "config": asdict(cfg),
-        "skipped_checks": [
-            "G1-1 线距≥8px（需像素分析）",
-            "G1-2 歪斜角（需 #30 deskew 输出）",
-            "G1-3 裁切完整性（人工勾选）",
-            "G1-4 页面顺序/缺页（需页码序列）",
-            "G1-5 文字可辨性（人工抽读）",
-            "G1-6 音符符号可区分（人工抽检）",
-            "G1-7 单页信息密度（需 OMR 计数）",
-        ],
+        "mode": "auto" if auto else "static",
         "G1-9": {"status": g1_9[0], "detail": g1_9[1]},
         "files": files,
         "errors": errors,
     }
+    if auto:
+        from checks import g1_auto
+        entries = [(Path(f["path"]).name, (f.get("auto_metrics") or {}).get("page_no")) for f in files]
+        st, detail = g1_auto.verdict_order(entries, expected_pages=expected_pages)
+        rep["G1-4"] = {"status": st, "detail": detail}
+        rep["skipped_checks"] = _auto_skipped(files, rep)
+    else:
+        rep["skipped_checks"] = _STATIC_SKIPPED
+    return rep
+
+
+_STATIC_SKIPPED = [
+    "G1-1 线距≥8px（需像素分析）",
+    "G1-2 歪斜角（需 #30 deskew 输出）",
+    "G1-3 裁切完整性（人工勾选）",
+    "G1-4 页面顺序/缺页（需页码序列）",
+    "G1-5 文字可辨性（人工抽读）",
+    "G1-6 音符符号可区分（人工抽检）",
+    "G1-7 单页信息密度（需 OMR 计数）",
+]
+
+AUTO_FILE_KEYS = ("G1-1L", "G1-2", "G1-3", "G1-5", "G1-6", "G1-7")
+
+_SKIP_NOTES = {
+    "G1-1L": "G1-1 线距≥8px（需 OMR 引擎）",
+    "G1-2": "G1-2 歪斜角（需 OMR/deskew）",
+    "G1-3": "G1-3 裁切完整性（需 OCR/CV 边界测量）",
+    "G1-4": "G1-4 页面顺序/缺页（需页码 OCR）",
+    "G1-5": "G1-5 文字可辨性（需 OCR）",
+    "G1-6": "G1-6 音符符号可区分（需 OMR 符号）",
+    "G1-7": "G1-7 单页信息密度（需 OMR 计数）",
+}
+
+
+def _auto_skipped(files: list[dict], rep: dict) -> list[str]:
+    """auto 模式下动态「仍需人工」清单：只列**实际 SKIP** 的项（SKIP 绝不冒充 PASS）。"""
+    out: list[str] = []
+    for key, note in _SKIP_NOTES.items():
+        if key == "G1-4":
+            if rep.get("G1-4", {}).get("status") == "SKIP" and note not in out:
+                out.append(note)
+            continue
+        if any(f["checks"].get(key, {}).get("status") == "SKIP" for f in files) and note not in out:
+            out.append(note)
+    return out
 
 
 def gate_verdict(rep: dict) -> str:
@@ -219,6 +272,9 @@ def gate_verdict(rep: dict) -> str:
         worst = _worse(worst, f["status"])
     # 目录级 G1-9 也计入
     worst = _worse(worst, rep["G1-9"]["status"])
+    # 目录级 G1-4（--auto 时的跨页顺序/缺页）同样计入
+    if "G1-4" in rep:
+        worst = _worse(worst, rep["G1-4"]["status"])
     if worst == "FAIL":
         return "FAIL"
     if worst == "NOTE":
@@ -261,6 +317,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dpi-relaxed", type=int, default=DPI_RELAXED)
     ap.add_argument("--short-relaxed", type=int, default=SHORT_RELAXED)
     ap.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    ap.add_argument("--auto", action="store_true",
+                    help="启用实测自动判定（OMR/OCR）；引擎不可用时对应项保持 SKIP（绝不冒充 PASS）")
+    ap.add_argument("--expected-pages", type=int, default=None,
+                    help="源声明总页数（G1-4 证明「缺页=0」的必要条件；不给则单页只能 NOTE）")
     args = ap.parse_args(argv)
     cfg = Config(dpi_min=args.dpi_min, short_min=args.short_min,
                  dpi_relaxed=args.dpi_relaxed, short_relaxed=args.short_relaxed)
@@ -271,22 +331,27 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         if p.is_dir():
-            rep = evaluate_dir(p, cfg)
+            rep = evaluate_dir(p, cfg, auto=args.auto, expected_pages=args.expected_pages)
             rep["verdict"] = gate_verdict(rep)
         else:
-            c = evaluate_path(p, cfg)
+            c = evaluate_path(p, cfg, auto=args.auto)
             rep = {
                 "root": str(p),
                 "config": asdict(cfg),
-                "skipped_checks": [
-                    "G1-1 线距≥8px", "G1-2 歪斜角", "G1-3 裁切完整性",
-                    "G1-4 页面顺序/缺页", "G1-5 文字可辨性",
-                    "G1-6 音符符号可区分", "G1-7 单页信息密度",
-                ],
+                "mode": "auto" if args.auto else "static",
                 "G1-9": {"status": "SKIP", "detail": "单文件模式不做目录级只读校验"},
                 "files": [c],
                 "errors": [],
             }
+            if args.auto:
+                rep["G1-4"] = {"status": "SKIP", "detail": "单文件模式不做跨页顺序校验"}
+                rep["skipped_checks"] = _auto_skipped([c], rep)
+            else:
+                rep["skipped_checks"] = [
+                    "G1-1 线距≥8px", "G1-2 歪斜角", "G1-3 裁切完整性",
+                    "G1-4 页面顺序/缺页", "G1-5 文字可辨性",
+                    "G1-6 音符符号可区分", "G1-7 单页信息密度",
+                ]
             rep["verdict"] = gate_verdict(rep)
     except (ValueError, OSError) as e:
         sys.stderr.write("read error: %s\n" % e)

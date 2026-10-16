@@ -1,0 +1,37 @@
+# Patch: oemer 0.1.8 · bbox.find_lines 对 cv2.HoughLinesP 返回形状的兼容修复
+#
+# 来源组件：oemer 0.1.8（PyPI，MIT）—— 下载后适配（"能改过来用的就下载改动一下用"）。
+# 记录时间：2026-10-16
+# 触发条件：本机 OpenCV 的 cv2.HoughLinesP 返回 (N,4)；oemer 原码假设 (N,1,4)。
+#           原行 `line = line[0]` 把 (4,) 行降成标量 → 下一行 `line[0]` 抛
+#           "IndexError: invalid index to scalar variable"（bbox.py:125），
+#           经 staffline_extraction.py:345 further_infer_track_nums → :618 find_lines 触发。
+# 影响：song01 实图 OMR 在谱线提取后段崩溃（spike 第一跑）。
+# 修复后：spike 全链通过，产出 MusicXML（193 notes / 23 measures）。
+#
+# 应用方式（容器/venv 内）：
+#   python - <<'PY'
+#   import pathlib
+#   p = pathlib.Path(__file__).parent  # 略：见 Dockerfile 中的 patch 步骤
+#   PY
+#   或直接对 site-packages/oemer/bbox.py 施加下列 diff。
+#
+# --- a/oemer/bbox.py
+# +++ b/oemer/bbox.py
+# @@ -120,9 +120,15 @@
+#      lines = cv2.HoughLinesP(data.astype(np.uint8), 1, np.pi/180, 50, None, min_len, max_gap)
+#      new_line = []
+#      if lines is not None:
+#          for line in lines:
+# -            line = line[0]
+# +            # cv2.HoughLinesP returns (N,1,4) on some OpenCV builds and (N,4) on others;
+# +            # the original `line = line[0]` turned a (4,) row into a scalar and crashed
+# +            # with "IndexError: invalid index to scalar variable" (bbox.py:125).
+# +            # Flatten to (4,) and skip degenerates so both shapes work.
+# +            line = np.asarray(line).reshape(-1)
+# +            if line.size < 4:
+# +                continue
+#              top_x, bt_x = (line[0], line[2]) if line[0] < line[2] else (line[2], line[0])
+#              top_y, bt_y = (line[1], line[3]) if line[1] < line[3] else (line[3], line[1])
+#              new_line.append((top_x, top_y, bt_x, bt_y))
+#      return new_line

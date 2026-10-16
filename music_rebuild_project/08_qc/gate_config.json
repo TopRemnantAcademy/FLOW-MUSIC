@@ -29,14 +29,87 @@
       "changed_at": "2026-10-16",
       "reason": "放宽带：短边 ∈ [1800,2400) 仅可 PASS_WITH_NOTES"
     },
+    "auto": {
+      "comment": "自动判定阈值（g1_image_quality.py --auto）。实现 tools/checks/g1_auto.py；测量 g1_accuracy.py。",
+      "line_space_pass_px": {
+        "value": 8.0,
+        "adjustable": true,
+        "changed_by": "automation",
+        "changed_at": "2026-10-16",
+        "reason": "G1-1 子项：五线谱线距 ≥8px（OMR Staff.unit_size 实测，已换算回原像素）"
+      },
+      "line_space_relaxed_px": {
+        "value": 6.0,
+        "adjustable": true,
+        "changed_by": "automation",
+        "changed_at": "2026-10-16",
+        "reason": "放宽带：线距 ∈ [6,8) 仅可 PASS_WITH_NOTES（gate_G1.md G1-1）"
+      },
+      "skew_pass_deg": {
+        "value": 1.0,
+        "adjustable": true,
+        "changed_by": "automation",
+        "changed_at": "2026-10-16",
+        "reason": "G1-2：|歪斜角| <1°（OMR Staff.slope → atan 实测）"
+      },
+      "skew_relaxed_deg": {
+        "value": 2.0,
+        "adjustable": true,
+        "changed_by": "automation",
+        "changed_at": "2026-10-16",
+        "reason": "放宽带：<2° 仅 NOTE；≥2° 一律 FAIL（gate_G1.md G1-2）"
+      },
+      "crop_margin_min_ratio": {
+        "value": 0.01,
+        "adjustable": true,
+        "changed_by": "automation",
+        "changed_at": "2026-10-16",
+        "reason": "G1-3：内容 bbox 距页边 ≥1% 短边（低于→NOTE 疑似裁切；触边→FAIL）"
+      },
+      "text_conf_min": {
+        "value": 60.0,
+        "adjustable": true,
+        "changed_by": "automation",
+        "changed_at": "2026-10-16",
+        "reason": "G1-5：Tesseract 词置信度达标线（0-100）"
+      },
+      "text_legible_ratio": {
+        "value": 0.9,
+        "adjustable": true,
+        "changed_by": "automation",
+        "changed_at": "2026-10-16",
+        "reason": "G1-5：高置信词占比 ≥90%，低于则存在不可辨行风险"
+      },
+      "text_height_min_px": {
+        "value": 16.0,
+        "adjustable": true,
+        "changed_by": "automation",
+        "changed_at": "2026-10-16",
+        "reason": "G1-5：字高 ≥16px（gate_G1.md 硬线）"
+      },
+      "systems_max": {
+        "value": 6,
+        "adjustable": true,
+        "changed_by": "automation",
+        "changed_at": "2026-10-16",
+        "reason": "G1-7：每页系统数 ≤6（超出则拆页或重拍）"
+      },
+      "measures_max": {
+        "value": 24,
+        "adjustable": true,
+        "changed_by": "automation",
+        "changed_at": "2026-10-16",
+        "reason": "G1-7：每页小节数 ≤24（超出则拆页或重拍）"
+      }
+    },
+    "engines": {
+      "omr_primary": "oemer 0.1.8（pip；钉 onnxruntime==1.20.0；bbox.find_lines 形状补丁见 00_docs/plan/patches/）",
+      "omr_baseline": "Audiveris（02_tool_selection_matrix.md:10 既定基线；交叉校验，待接入）",
+      "ocr": "pytesseract（需系统 tesseract-ocr + kor/chi-sim 语言包）",
+      "note": "引擎不可用/超时 → 对应项 SKIP 并注明，绝不冒充 PASS（P5）"
+    },
     "skipped_by_tool": [
-      "G1-1 五线谱线距≥8px（需像素直方图/傅里叶，纯 stdlib 不可测）",
-      "G1-2 歪斜角（需 #30 deskew 输出或像素分析）",
-      "G1-3 裁切完整性（人工勾选清单）",
-      "G1-4 页面顺序/缺页（需页码序列）",
-      "G1-5 文字可辨性（人工抽读）",
-      "G1-6 音符符号可区分（人工抽检）",
-      "G1-7 单页信息密度（需 OMR 计数）"
+      "上述 7 项在**未启用 --auto 或引擎缺失**时仍 SKIP；启用 --auto 且引擎可用时改为实测判定（tools/checks/g1_auto.py）"
     ]
   }
 }

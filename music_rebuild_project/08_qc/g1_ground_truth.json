@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "created": "2026-10-16",
+    "label_origin": "engine-derived (oemer 实测) + 阈值比对 —— **非独立人标**",
+    "warning": "本文件仅用于跑通「自动判定 ↔ 真值」比对链路（g1_accuracy.py 冒烟）。**不可**作为 99% 准确率结论的依据：精度只由**独立**测量声明（P5）。正确做法见 00_docs/plan/09_human_to_auto_decisions.md §准确率协议（合成标定集 + 双引擎共识 + 真实标注集）。",
+    "min_samples_for_rate": 100,
+    "checks": ["G1-1L", "G1-2", "G1-3", "G1-4", "G1-5", "G1-6", "G1-7"]
+  },
+  "pages": [
+    {
+      "file": "song01_preprocessed_v001.jpeg",
+      "label_origin": "engine-derived",
+      "expected": {
+        "G1-1L": "PASS",
+        "G1-2": "PASS",
+        "G1-6": "PASS",
+        "G1-7": "FAIL"
+      },
+      "evidence": {
+        "G1-1L": "unit_size=11.91（模型空间）→ 18.32px（原像素，缩放 1.5386）",
+        "G1-2": "|atan(slope)| max=0.169°",
+        "G1-6": "notes=179 barlines=29 clefs=8 sfns=26 rests=14",
+        "G1-7": "systems=8（new-system 标记 7 + 首个系统）> 6 → FAIL"
+      },
+      "not_measured": ["G1-3", "G1-4", "G1-5"],
+      "not_measured_reason": "本机未装 Tesseract → OCR 引擎不可用，对应项保持 SKIP"
+    }
+  ]
+}
