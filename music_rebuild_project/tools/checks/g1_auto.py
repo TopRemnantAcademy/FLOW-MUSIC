@@ -41,6 +41,7 @@ TEXT_HEIGHT_MIN_PX = 16.0       # G1-5：字高 ≥16px
 SYSTEMS_MAX = 6                 # G1-7：每页系统数 ≤6
 MEASURES_MAX = 24               # G1-7：每页小节数 ≤24
 CROP_MARGIN_MIN_RATIO = 0.01    # G1-3：内容 bbox 距页边 ≥1% 短边
+
 CROP_TOUCH_PX = 2.0             # G1-3：内容距页边 <2px 视为触边（疑似被切）
 
 OEMER_ORT_HINT = "onnxruntime==1.20.0"   # 见 plan/patches/：1.31 对老检查点负 pad 报错
@@ -510,9 +511,15 @@ def _cv_collect(img: Path) -> AutoMetrics:
     _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     m = AutoMetrics(source="cv")
 
-    # ---- 内容余量（先去掉孤立噪点，再取墨迹 bbox）----
-    ink = cv2.morphologyEx(bw.copy(), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8), iterations=1)
+    # ---- 内容余量（去掉孤立噪点，再取墨迹 bbox）----
+    # ⚠ 不能用方形结构元：1px 细线（合成标定集、低分辨率扫描都是这种）会被 3x3 开/腐蚀
+    #   整体抹掉，bbox 直接消失 → 余量测不到（#163 T1 实测坑）。
+    #   改用**轴向 1×7**结构元：能去掉孤立噪点，但不伤害整行连续的谱线。
+    kn = np.ones((1, 31), np.uint8)
+    ink = cv2.morphologyEx(bw.copy(), cv2.MORPH_OPEN, kn, iterations=1)
     ys, xs = np.nonzero(ink)
+    if len(xs) == 0:          # 图上没有连续 ≥31px 的水平笔迹 → 保底退回未去噪的二值图
+        ys, xs = np.nonzero(bw)
     if len(xs):
         x0, x1 = int(xs.min()), int(xs.max())
         y0, y1 = int(ys.min()), int(ys.max())
@@ -540,29 +547,54 @@ def _cv_collect(img: Path) -> AutoMetrics:
         m.skew_deg_mean = abs(angs[len(angs) // 2])
         m.skew_deg_max = max(abs(a) for a in angs)
 
-    # ---- 线距：水平投影强行 → 行中心 → 取**最小重复间距**（五线谱内间距）----
-    proj = (bw > 0).sum(axis=1).astype(float)
-    if proj.max() > 0:
-        rows = np.where(proj >= 0.45 * proj.max())[0]
-        groups: list[tuple[int, int]] = []
-        if rows.size:
-            start = prev = int(rows[0])
-            for r in rows[1:]:
-                r = int(r)
-                if r - prev > 1:
-                    groups.append((start, prev))
-                    start = r
-                prev = r
-            groups.append((start, prev))
-        centers = [(a + b) / 2.0 for a, b in groups if (b - a) <= 6]   # 细线才算谱线
-        diffs = sorted(round(b - a, 3) for a, b in zip(centers, centers[1:]) if (b - a) > 0.5)
+    # ---- 线距：**逐列**投影 → 行中心 → 取**最小重复间距**（五线谱内间距）----
+    # 为何逐列：谱页一旦倾斜（哪怕 0.8°），五条 1px 细线会在同一行带内互相「路过」，
+    #   **全页**水平投影把它们糊成一条厚墨带 → 细线全被筛掉、线距测不到。
+    #   （#163 T3 合成标定集**当场抓到**的真实缺陷；改为逐列后按列取众数间距。）
+    per_col: dict[float, int] = {}
+    for x in _col_samples(W):
+        col = bw[:, x]
+        diffs = _line_diffs(col)
         if diffs:
-            base = diffs[0]
-            core = [d for d in diffs if d <= base * 1.5]              # 最小重复间距=谱线间距
-            if core:
-                m.unit_size_px = core[len(core) // 2]
-                m.unit_size_min_px = core[0]
+            per_col[round(float(np.median(diffs)), 1)] = per_col.get(
+                round(float(np.median(diffs)), 1), 0) + 1
+    if per_col:
+        best_pitch, _ = max(per_col.items(), key=lambda kv: (kv[1], -kv[0]))
+        if best_pitch > 0.5:
+            m.unit_size_px = round(best_pitch, 1)
+            m.unit_size_min_px = m.unit_size_px
     return m
+
+
+def _col_samples(width: int, max_cols: int = 64) -> list[int]:
+    """等距取列（避免大图上逐列扫描成为瓶颈）。"""
+    if width <= max_cols:
+        return list(range(width))
+    step = width / max_cols
+    return sorted({int(i * step) for i in range(max_cols)} | {width - 1})
+
+
+def _line_diffs(col, min_run: int = 1, max_run: int = 6) -> list[float]:
+    """单列里的「细谱线」行中心 → 相邻间距（竖直游程 1~6px 视为一条谱线）。"""
+    import numpy as np
+
+    ys = np.nonzero(col)[0]
+    if ys.size == 0:
+        return []
+    centers: list[float] = []
+    runs: list[tuple[int, int]] = []          # 竖直游程（连续墨迹段）
+    start = prev = int(ys[0])
+    for y in ys[1:]:
+        y = int(y)
+        if y - prev > 1:
+            runs.append((start, prev))
+            start = y
+        prev = y
+    runs.append((start, prev))                # 别丢最后一段（曾经被哨兵值吞掉 → 少一个间距）
+    for a, b in runs:
+        if min_run <= (b - a + 1) <= max_run:
+            centers.append((a + b) / 2.0)
+    return [round(b - a, 3) for a, b in zip(centers, centers[1:]) if (b - a) > 0.5]
 
 
 def consensus_status(statuses: Sequence[str]) -> tuple[str, str]:
