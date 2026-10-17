@@ -7,13 +7,43 @@
 #
 # 安装：pip install -r music_rebuild_project/deploy/omr-qa/requirements-omr.txt
 
+# ---- ① OMR 主引擎 + 推理后端 --------------------------------------------------
 oemer==0.1.8                      # license: MIT          (OMR 主引擎；需 bbox.find_lines 补丁)
 onnxruntime==1.20.0               # license: MIT          (钉版：1.31 对 oemer 老检查点负 pad 报错)
+
+# ---- ①b ML 依赖钉版（#171）--------------------------------------------------
+# oemer 0.1.8 自带 4 个 pickle 的 sklearn SVC 模型（sklearn_models/{clef,rests,
+# rests_above8,sfn}.model），pickle 里记录的版本是 **1.2.0**。sklearn 的
+# BaseEstimator.__setstate__ 在「pickle 版本 != 运行时版本」时抛
+# InconsistentVersionWarning（"可能产出破坏代码或无效结果"）—— 这是**静默模型偏斜**：
+# 符号分类（谱号/休止符/变音记号）可能悄悄判错，而老清单没钉这几个包，
+# 实测环境解析到 sklearn 1.9.1，每次推理都在刷这条警告，且**无门禁能抓**。
+#
+# 钉法（#171 实测，非拍脑袋）：
+#   * **sklearn 1.3.2**：1.2.0~1.3.2 全都会告警（SVC 类的模型确实变了，不是噪声）；
+#     1.3.2 是「Python 3.12 有 cp312 wheel 的最后一条线」（1.2.x/1.3.0 的 wheel 只到
+#     cp311），再往上 1.4+ 与 1.2.0 的状态布局差异更大。取它 = 用最小的版本差换
+#     cp312 wheel，且告警原因可解释 → 见下方 smoke 的显式豁免。
+#   * **scipy 1.11.4 / numpy<2**：sklearn 1.3.2 自身声明 `numpy<2`，scipy 1.11.4 是
+#     scipy 里仍带 `numpy<1.28` 约束线的最后一版，一起钉住避免解析器飘去 numpy 2.x。
+#   * **scikit-image 0.22.0**：第一个有 cp312 wheel 的版本（0.20/0.21 装到 cp312 要
+#     现场编译 meson/ninja，CI 里纯浪费 5min）。
+#   * 真正能不能用不靠「版本号看起来对」，靠下面这条 smoke —— 它会**加载 + 推理**一遍，
+#     版本再漂就红：python deploy/omr-qa/smoke_omr_model_load.py
+scikit-learn==1.3.2               # license: BSD-3-Clause (钉版：oemer SVC pickle 版本 1.2.0；见上)
+scipy==1.11.4                     # license: BSD-3-Clause (sklearn 1.3.2 搭档；仍带 numpy<1.28 线)
+scikit-image==0.22.0              # license: BSD-3-Clause (钉版：首个 cp312 wheel 线)
+# numpy 显式写死：oemer 只声明 `numpy`，不钉就会被解析到 2.x，而 sklearn 1.3.2 要求 <2，
+# 直接解析失败；显式钉住也让「为什么不能升 numpy」在清单里看得见。
+numpy>=1.26.0,<2                  # license: BSD-3-Clause
+
+# ---- ② OCR -----------------------------------------------------------------
 rapidocr-onnxruntime==1.2.3       # license: Apache-2.0   (OCR：文字/字高/页码/内容余量)
 pytesseract==0.3.13               # license: Apache-2.0   (OCR 第二票；需系统 tesseract-ocr)
 docaligner-docsaid==1.1.1         # license: Apache-2.0   (G1-3 裁切：文档四角)
+
+# ---- ③ 乐谱解析与通用依赖 ----------------------------------------------------
 music21>=9.1                      # license: BSD-3-Clause (MusicXML 解析/小节-音长校验)
-numpy                             # license: BSD-3-Clause
 Pillow                            # license: MIT-CMU
 # ⚠ opencv **必须**用 headless 版：无头容器里非 headless 版 import cv2 会炸
 #   libGL.so.1 / libxcb.so.1（GUI 构建链带 Qt/X11 动态库，镜像里没有）。
