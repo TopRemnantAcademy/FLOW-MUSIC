@@ -45,6 +45,10 @@ CROP_MARGIN_MIN_RATIO = 0.01    # G1-3：内容 bbox 距页边 ≥1% 短边
 CROP_TOUCH_PX = 2.0             # G1-3：内容距页边 <2px 视为触边（疑似被切）
 
 OEMER_ORT_HINT = "onnxruntime==1.20.0"   # 见 plan/patches/：1.31 对老检查点负 pad 报错
+# oemer 超时护栏（秒）。野上传没有质量下限，`ete.extract()` 可能挂死；而 collect_metrics
+# 的语义是「引擎异常只记账」，没有护栏时挂死 = 整条流水线挂死且无人报警（issue #169）。
+# 实测正常页 ~2.4 min，默认给 3 倍余量；需要更长用环境变量 OEMER_TIMEOUT_S 覆盖。
+OEMER_TIMEOUT_S = float(os.environ.get("OEMER_TIMEOUT_S") or 420.0)
 
 
 # ---------------------------------------------------------------- 汇聚指标
@@ -74,6 +78,7 @@ class AutoMetrics:
     page_no: int | None = None                 # 页眉/页脚 OCR 到的页码
     # CV（裁切）
     content_margin_ratio: float | None = None  # 内容 bbox 到页边最小距离 / 短边
+    musicxml_path: str | None = None           # oemer 产出的 MusicXML（供下游结构校验）
     errors: dict = field(default_factory=dict)
 
     def merge(self, other: "AutoMetrics") -> "AutoMetrics":
@@ -256,50 +261,89 @@ def auto_checks_dir(files: Sequence[Path], provider: Optional[MetricsProvider] =
 
 
 # ---------------------------------------------------------------- 引擎适配层（懒加载）
+def _model_ready() -> bool:
+    """检查点是否齐（缺则 oemer 会去下载，联网/时长都不受控 → 必须先闸住）。"""
+    try:
+        from oemer import MODULE_PATH
+    except Exception:
+        return False
+    return all(os.path.exists(os.path.join(MODULE_PATH, "checkpoints", sub, "model.onnx"))
+               for sub in ("unet_big", "seg_net"))
+
+
+def _kill_group(proc: "subprocess.Popen") -> None:
+    """杀掉整个进程组（start_new_session 之后 pgid == pid），再回收。"""
+    import signal
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            break
+        try:
+            proc.wait(timeout=5)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def _oemer_collect(img: Path) -> AutoMetrics:
-    """oemer 全链（含检查点自动下载）→ 线距/歪斜/符号/系统/小节。
+    """oemer 全链（**子进程 + 超时护栏**）→ 线距/歪斜/符号/系统/小节。
+
+    为什么走子进程：① 超时只能靠杀进程保证（进程内 `extract()` 无取消点）；
+    ② oemer 内部大量 print() 会污染本工具的 --json 输出。
 
     依赖钉版：onnxruntime==1.20.0（1.31 对老检查点负 pad 报 ShapeInferenceError）。
     兼容补丁：bbox.find_lines（HoughLinesP 形状），见 plan/patches/。
+    检查点缺失 → `EngineUnavailable`（不在测量路径里偷偷下载，联网时长不可控）。
     """
     try:
-        import numpy as np
-        import oemer.ete as ete
-        from oemer import MODULE_PATH, layers
+        import oemer  # noqa: F401 - 只有"装没装"该在护栏之前判定
     except Exception as e:  # pragma: no cover - 环境相关
         raise EngineUnavailable(f"oemer 不可用：{e}") from e
+    # numpy/PIL 的可用性属于**提取指标**的一部分：跑完子进程再用，缺了也只影响提取
 
-    try:
-        import onnxruntime as ort
-        ort_ver = ort.__version__
-    except Exception:  # pragma: no cover
-        ort_ver = "?"
-    if not ort_ver.startswith("1.20"):
-        # 不阻断（可能已被单独修好），但把事实带进报告
-        pass
-
-    import argparse
-    import math as _math
-
-    chk = os.path.join(MODULE_PATH, "checkpoints", "unet_big", "model.onnx")
-    if not os.path.exists(chk):
-        with contextlib.redirect_stdout(io.StringIO()):   # oemer 下载进度会 print 到 stdout
-            for title, url in ete.CHECKPOINTS_URL.items():
-                sub = "unet_big" if title.startswith("1st") else "seg_net"
-                save_dir = os.path.join(MODULE_PATH, "checkpoints", sub)
-                os.makedirs(save_dir, exist_ok=True)
-                ete.download_file(title, url, os.path.join(save_dir, title.split("_")[1]))
+    if not _model_ready():
+        raise EngineUnavailable(
+            "oemer 检查点缺失（未经预热）→ 拒绝无模型空跑；"
+            "先在 omr-qa 镜像里 `python -m oemer.ete -i <img>` 预热一次，或用 warm_oemer_checkpoints()")
 
     out_dir = Path(tempfile.mkdtemp(prefix="oemer_auto_"))
-    ns = argparse.Namespace(img_path=str(img), output_path=str(out_dir),
-                            use_tf=False, save_cache=False, without_deskew=False)
-    # oemer 内部大量 print()（进度/统计）会污染本工具的 --json 输出 → 全程吞掉 stdout
-    with contextlib.redirect_stdout(io.StringIO()):
-        ete.clear_data()
-        mxl = ete.extract(ns)
+    # 真实入口是 CLI：`python -m oemer.ete -i <img> -o <dir>`（进程内直接调 extract()
+    # 会拿到未初始化的 argparse Namespace，是 0.1.8 的既有坑）。
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "oemer.ete", "-i", str(img), "-o", str(out_dir)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        start_new_session=True,       # 独立进程组：超时才能连孙进程一起杀
+    )
+    try:
+        _, stderr = proc.communicate(timeout=OEMER_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)             # fail-closed：杀干净再抛，不留僵尸占满 CPU
+        raise EngineUnavailable(
+            f"oemer 超时（>{OEMER_TIMEOUT_S:.1f}s，图={img.name}）→ 已终止进程组；"
+            "野上传可用环境变量 OEMER_TIMEOUT_S 放宽，但**不得**吞掉该失败")
+    if proc.returncode != 0:
+        tail = (stderr or b"").decode("utf-8", "replace").strip().splitlines()[-3:]
+        raise EngineUnavailable(f"oemer 退出码={proc.returncode}：" + " | ".join(tail))
+    mxl = next(iter(sorted(out_dir.rglob("*.musicxml"))), None)
+    if mxl is None:
+        raise EngineUnavailable(f"oemer 未产出 MusicXML（输出目录={out_dir}）")
 
-    m = AutoMetrics(source="oemer")
-    staffs = [s for s in np.array(layers.get_layer("staffs")).reshape(-1) if s is not None]
+    m = AutoMetrics(source="oemer", musicxml_path=str(mxl))
+    try:
+        m = _oemer_metrics(img, mxl, m)
+    except Exception as e:      # 提取失败不冒充 PASS：musicxml 仍在，字段留空
+        m.errors["extract"] = f"{type(e).__name__}: {e}"
+    return m
+
+
+def _oemer_metrics(img: Path, mxl: Path, m: AutoMetrics) -> AutoMetrics:
+    """从 oemer 的图层缓存 + MusicXML 提指标（纯本地，无子进程）。"""
+    import numpy as np
+    from PIL import Image as PILImage
+    from oemer import layers
+
+    staffs = [st for st in np.array(layers.get_layer("staffs")).reshape(-1) if st is not None]
     us, sl = [], []
     for st in staffs:
         try:
@@ -313,7 +357,6 @@ def _oemer_collect(img: Path) -> AutoMetrics:
     m.n_staves = len(staffs)
 
     # 换算回原像素：staff_pred 是模型工作分辨率
-    from PIL import Image as PILImage
     W, H = PILImage.open(img).size
     fy = None
     try:
@@ -327,7 +370,7 @@ def _oemer_collect(img: Path) -> AutoMetrics:
         m.unit_size_px = (sum(us) / len(us)) * scale
         m.unit_size_min_px = min(us) * scale
     if sl:
-        degs = [abs(_math.degrees(_math.atan(s))) for s in sl]
+        degs = [abs(math.degrees(math.atan(s))) for s in sl]
         m.skew_deg_max = max(degs)
         m.skew_deg_mean = sum(degs) / len(degs)
 
@@ -339,15 +382,33 @@ def _oemer_collect(img: Path) -> AutoMetrics:
         except Exception:
             pass
 
-    try:
-        txt = Path(str(mxl)).read_text(encoding="utf-8", errors="replace")
-        m.n_measures = txt.count("<measure ")
-        if m.n_notes is None:
-            m.n_notes = txt.count("<note")
-        m.n_systems = 1 + txt.count('new-system="yes"')
-    except Exception as e:
-        m.errors["musicxml"] = str(e)
+    txt = Path(str(mxl)).read_text(encoding="utf-8", errors="replace")
+    m.n_measures = txt.count("<measure ")
+    if m.n_notes is None:
+        m.n_notes = txt.count("<note")
+    m.n_systems = 1 + txt.count('new-system="yes"')
     return m
+
+
+def warm_oemer_checkpoints() -> list[str]:
+    """把 oemer 检查点下到本地（**显式调用**，不在测量路径里偷偷联网）。返回已就绪的子目录。"""
+    try:
+        import oemer.ete as ete
+        from oemer import MODULE_PATH
+    except Exception as e:  # pragma: no cover - 环境相关
+        raise EngineUnavailable(f"oemer 不可用：{e}") from e
+
+    done = []
+    for title, url in ete.CHECKPOINTS_URL.items():
+        sub = "unet_big" if title.startswith("1st") else "seg_net"
+        save_dir = os.path.join(MODULE_PATH, "checkpoints", sub)
+        os.makedirs(save_dir, exist_ok=True)
+        dst = os.path.join(save_dir, title.split("_")[1])
+        if not os.path.exists(dst):
+            with contextlib.redirect_stdout(io.StringIO()):   # 下载进度会 print 到 stdout
+                ete.download_file(title, url, dst)
+        done.append(dst)
+    return done
 
 
 _TXT_RE = re.compile(r"\d{1,4}")

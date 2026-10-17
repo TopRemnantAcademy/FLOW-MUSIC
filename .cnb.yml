@@ -126,6 +126,63 @@
             cd backend
             python -m pytest tests/omr_e2e/ -q -p no:cacheprovider
 
+    # ---- 野上传 → 全链路 OMR（#169 固化，仅 api_trigger）------------------------
+    # 三处断言（任一红即整 job 红，**不使用** `|| true` / `allowFailure`）：
+    #   ① G1 门禁对低分辨率野图诚实 FAIL（tests/wild_omr/test_wild_upload_gate.py）
+    #   ② oemer 有超时护栏、超时即 EngineUnavailable（…_oemer_timeout.py）
+    #   ③ score_xml_validate 无拍号来源时只可 PASS_WITH_NOTES（…_xml_validate.py）
+    # 之后在**真实 omr-qa 栈**上跑一遍 OMR（smoke_omr.py）证明栈没坏、失败没被吞。
+    # 不挂 PR/push：装 79 个包 + 模型推理是重活，fast gate 只跑单测。
+    - name: mock-omr-wild-upload
+      docker:
+        image: python:3.12-slim
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 8
+      stages:
+        - name: 系统依赖（Tesseract 第二票 OCR）
+          script: |
+            set -eu
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              tesseract-ocr tesseract-ocr-kor tesseract-ocr-chi-sim
+            rm -rf /var/lib/apt/lists/*
+        - name: 装对外 OMR 栈（钉版，见 requirements-omr.txt）
+          script: |
+            set -eu
+            pip install --no-cache-dir \
+              -r music_rebuild_project/deploy/omr-qa/requirements-omr.txt
+            pip install --no-cache-dir pytest
+          timeout: 30m
+        - name: 强制 headless OpenCV（rapidocr 会拉非 headless 版覆盖它）
+          script: |
+            set -eu
+            pip uninstall -y opencv-python
+            pip install --no-cache-dir --force-reinstall --no-deps opencv-python-headless
+        - name: oemer 补丁 + 检查点预热（幂等；显式联网，不在测量路径里偷偷下载）
+          script: |
+            set -eu
+            python music_rebuild_project/deploy/omr-qa/apply_oemer_patch.py
+            python - <<'EOF'
+            import sys
+            sys.path.insert(0, "music_rebuild_project/tools")
+            from checks.g1_auto import warm_oemer_checkpoints
+            print(warm_oemer_checkpoints())
+            EOF
+          timeout: 20m
+        - name: ① G1 门禁诚实 FAIL + ② oemer 超时护栏 + ③ XML 校验不静默 PASS
+          script: |
+            set -eu
+            python -m pytest tests/wild_omr/ -q -p no:cacheprovider
+        - name: 野上传 OMR 冒烟（真实栈；引擎降级必须被归类，失败不得被吞）
+          script: |
+            set -eu
+            python tests/wild_omr/smoke_omr.py \
+              --image tests/wild_omr/fixtures/song01_preprocessed_v001_blur300.jpeg \
+              --engines oemer \
+              --assert-fail-closed tests/wild_omr/
+          timeout: 45m
+
     - name: frontend-contract
       docker:
         image: node:22

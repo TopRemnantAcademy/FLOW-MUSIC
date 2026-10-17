@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN"
+  "http://www.musicxml.org/dtds/partwise.dtd">
+<!-- 脱敏 fixture（手写，4 小节 4/4，无 <time>）：模拟野上传经 oemer 产出的"结构可解析但谱面缺拍号"的
+     MusicXML 形态。刻意不带 <time>，因为实测 oemer 0.1.8 输出 <time> 计数 = 0。 -->
+<score-partwise version="3.1">
+  <part-list>
+    <score-part id="P1"><part-name>Voice</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>16</duration><type>whole</type><voice>1</voice></note>
+    </measure>
+    <measure number="2">
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>16</duration><type>whole</type><voice>1</voice></note>
+    </measure>
+    <measure number="3">
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>16</duration><type>whole</type><voice>1</voice></note>
+    </measure>
+    <measure number="4">
+      <note><pitch><step>F</step><octave>4</octave></pitch><duration>16</duration><type>whole</type><voice>1</voice></note>
+    </measure>
+  </part>
+</score-partwise>
