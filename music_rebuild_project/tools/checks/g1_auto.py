@@ -325,8 +325,12 @@ def _oemer_collect(img: Path) -> AutoMetrics:
             f"oemer 超时（>{OEMER_TIMEOUT_S:.1f}s，图={img.name}）→ 已终止进程组；"
             "野上传可用环境变量 OEMER_TIMEOUT_S 放宽，但**不得**吞掉该失败")
     if proc.returncode != 0:
-        tail = (stderr or b"").decode("utf-8", "replace").strip().splitlines()[-3:]
-        raise EngineUnavailable(f"oemer 退出码={proc.returncode}：" + " | ".join(tail))
+        # 保留 traceback 的关键两行：最后一行是异常，倒数第二处帧是"谁抛的"。
+        # 只留最后 3 行会只剩 `^^^^^^^^` 这种定位符，等于没信息（CNB 第一次实测）。
+        tail = [ln.strip() for ln in (stderr or b"").decode("utf-8", "replace").strip()
+                .splitlines() if ln.strip() and not set(ln.strip()) <= set("^ ~|")]
+        detail = " | ".join(tail[-4:]) if tail else "stderr 为空"
+        raise EngineUnavailable(f"oemer 退出码={proc.returncode}：{detail}")
     mxl = next(iter(sorted(out_dir.rglob("*.musicxml"))), None)
     if mxl is None:
         raise EngineUnavailable(f"oemer 未产出 MusicXML（输出目录={out_dir}）")
