@@ -22,6 +22,28 @@ if str(_TOOLS_DIR) not in sys.path:
 from checks import g1_auto as A             # noqa: E402
 
 
+def require_cv() -> None:
+    """真实调用 ``_cv_collect`` 的用例统一走这里：环境不支持 CV 就 **skip** 而非 fail。
+
+    fast gate 只装 pytest（见仓库根 ``.cnb.yml``），隔离环境里没有 cv2 ——
+    而 ``_cv_collect`` 在缺 cv2 时抛 ``EngineUnavailable``（对**生产调用方**是正确行为：
+    由 ``collect_metrics`` 降级；对**测试**则只是「本环境测不了」）。
+    故这里把两种不可测情形都转成 skip；装了 opencv 的环境（重活 stage、开发机）照常跑。
+    不在 fast gate 装 opencv：那是 #165 明令禁止的重依赖。
+    """
+    pytest.importorskip("cv2", reason="fast gate 无 cv2，CV 用例在重活 stage 跑")
+    pytest.importorskip("numpy", reason="fast gate 无 numpy，CV 用例在重活 stage 跑")
+
+
+def cv_collect_or_skip(img: Path) -> A.AutoMetrics:
+    """``_cv_collect`` 的测试包装：引擎不可用时 skip（区分「测不了」与「测错了」）。"""
+    require_cv()
+    try:
+        return A._cv_collect(img)
+    except A.EngineUnavailable as e:      # 例如 PIL/图解码缺失、OpenCV 无头崩溃
+        pytest.skip(f"CV 引擎在本环境不可用：{e}")
+
+
 def M(**kw) -> A.AutoMetrics:
     return A.AutoMetrics(**kw)
 
@@ -293,8 +315,8 @@ class TestCvEngine:
     @pytest.fixture(scope="class")
     @classmethod
     def synth(cls, tmp_path_factory):
-        pytest.importorskip("cv2")
-        np = pytest.importorskip("numpy")
+        require_cv()
+        import numpy as np
         from PIL import Image
         d = tmp_path_factory.mktemp("cv")
         path = d / "synth.png"
@@ -310,13 +332,13 @@ class TestCvEngine:
         assert "cv" in A._ENGINES
 
     def test_measures_unit_size(self, synth):
-        m = A._cv_collect(synth)
+        m = cv_collect_or_skip(synth)
         assert m.source == "cv"
         assert m.unit_size_px == pytest.approx(12.0, abs=1.0)
         assert m.unit_size_min_px == pytest.approx(12.0, abs=1.0)
 
     def test_measures_skew_and_margin(self, synth):
-        m = A._cv_collect(synth)
+        m = cv_collect_or_skip(synth)
         assert m.skew_deg_max is not None and m.skew_deg_max < 1.0
         assert m.content_margin_ratio is not None and m.content_margin_ratio > 0
 
@@ -324,6 +346,7 @@ class TestCvEngine:
         """不可读图 → EngineUnavailable（由 collect_metrics 捕获，不炸主流程）。"""
         bad = tmp_path / "nope.png"
         bad.write_bytes(b"not an image")
+        require_cv()                     # 无 cv2 时抛的是「装不上」，不是「读不了」
         with pytest.raises(A.EngineUnavailable):
             A._cv_collect(bad)
 
@@ -366,8 +389,8 @@ class TestCvRegression:
     @pytest.fixture(scope="class")
     @classmethod
     def slanted(cls, tmp_path_factory):
-        pytest.importorskip("cv2")
-        np = pytest.importorskip("numpy")
+        require_cv()
+        import numpy as np
         from PIL import Image
         d = tmp_path_factory.mktemp("cvreg")
         out = {}
@@ -388,12 +411,12 @@ class TestCvRegression:
     def test_slanted_staff_still_measures_spacing(self, slanted):
         """缺陷①：倾斜 ≠ 测不到线距（此前返回 None → G1-1L 假 SKIP）。"""
         for angle, path in slanted.items():
-            m = A._cv_collect(path)
+            m = cv_collect_or_skip(path)
             assert m.unit_size_px == pytest.approx(12.0, abs=0.5), f"angle={angle} 线距未测到"
 
     def test_slanted_staff_verdict_not_skip(self, slanted):
         for path in slanted.values():
-            assert A.verdict_line_space(A._cv_collect(path))[0] == "PASS"
+            assert A.verdict_line_space(cv_collect_or_skip(path))[0] == "PASS"
 
     def test_uniform_line_density_is_not_skipped(self, slanted):
         """缺陷②：列投影分布均匀（max==p90）时不得整体排除。"""
@@ -416,6 +439,6 @@ class TestCvRegression:
             "preprocessed" / "song01_preprocessed_v001.jpeg"
         if not img.exists():
             pytest.skip("song01 预处理页不在工作区")
-        m = A._cv_collect(img)
+        m = cv_collect_or_skip(img)      # 无 cv2（fast gate）→ skip，不是 fail
         assert m.unit_size_px == pytest.approx(18.0, abs=0.6)
         assert A.verdict_line_space(m)[0] == "PASS"
