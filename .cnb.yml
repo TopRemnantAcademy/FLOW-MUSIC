@@ -86,6 +86,67 @@
             python music_rebuild_project/deploy/omr-qa/smoke_cv.py \
               music_rebuild_project/02_source/song01/preprocessed/song01_preprocessed_v001.jpeg
 
+    # ---- Mock 三套（#168 固化，仅 api_trigger；勿挂 PR/push，避免拖慢 fast gate）----
+    - name: mock-backend-full
+      docker:
+        image: python:3.12-slim
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      stages:
+        - name: 系统依赖 + 装后端依赖
+          script: |
+            set -eu
+            apt-get update
+            apt-get install -y --no-install-recommends ffmpeg build-essential
+            rm -rf /var/lib/apt/lists/*
+            pip install --no-cache-dir -r backend/requirements.txt
+          timeout: 30m
+        - name: 后端 Mock 全量单测（排除 omr_e2e）
+          script: |
+            set -eu
+            cd backend
+            python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/omr_e2e
+
+    - name: mock-omr-e2e
+      docker:
+        image: python:3.12-slim
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      stages:
+        - name: 装后端依赖
+          script: |
+            set -eu
+            pip install --no-cache-dir -r backend/requirements.txt
+          timeout: 30m
+        - name: OMR 端到端 Mock 编排（tests/omr_e2e）
+          script: |
+            set -eu
+            cd backend
+            python -m pytest tests/omr_e2e/ -q -p no:cacheprovider
+
+    - name: frontend-contract
+      docker:
+        image: node:22
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      stages:
+        - name: 装前端依赖
+          script: |
+            set -eu
+            cd frontend
+            npm ci
+          timeout: 20m
+        - name: 契约测试（contract + player + a11y）
+          script: |
+            set -eu
+            cd frontend
+            npm run test:contract
+            npm run test:player
+            npm run test:a11y
+
 main:
   push:
     - name: gate-fast
