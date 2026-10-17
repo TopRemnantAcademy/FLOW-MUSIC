@@ -305,13 +305,15 @@ def _oemer_collect(img: Path) -> AutoMetrics:
     if not _model_ready():
         raise EngineUnavailable(
             "oemer 检查点缺失（未经预热）→ 拒绝无模型空跑；"
-            "先在 omr-qa 镜像里 `python -m oemer.ete -i <img>` 预热一次，或用 warm_oemer_checkpoints()")
+            "先在 omr-qa 镜像里 `python -m oemer.ete <img> -o <dir>` 预热一次，"
+            "或用 warm_oemer_checkpoints()")
 
     out_dir = Path(tempfile.mkdtemp(prefix="oemer_auto_"))
-    # 真实入口是 CLI：`python -m oemer.ete -i <img> -o <dir>`（进程内直接调 extract()
-    # 会拿到未初始化的 argparse Namespace，是 0.1.8 的既有坑）。
+    # 真实入口是 CLI：`python -m oemer.ete <img> -o <dir>`（图片是**位置参数**
+    # `img_path`，没有 `-i`；写错只会拿到退出码 2 的 usage 报错，看着像"引擎拒绝"）。
+    # 进程内直接调 extract() 则拿到未初始化的 argparse Namespace —— 0.1.8 的既有坑。
     proc = subprocess.Popen(
-        [sys.executable, "-m", "oemer.ete", "-i", str(img), "-o", str(out_dir)],
+        [sys.executable, "-m", "oemer.ete", str(img), "-o", str(out_dir)],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         start_new_session=True,       # 独立进程组：超时才能连孙进程一起杀
     )

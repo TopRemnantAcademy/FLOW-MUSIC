@@ -10,7 +10,8 @@
   1. **OMR 真的跑到了**（证明装出来的栈没坏）
        a. `oemer` 引擎无 error，且 `unit_size_px` 测到 → 直接通过；
        b. `oemer` 报错时，只有当错误属于**已知的拒绝/降级类**（超时、检查点缺失、
-          无 MusicXML、非零退出）才算"引擎活着"；其它异常一律红。
+          无 MusicXML）才算"引擎活着"；**退出码/用法错误一律红**（那是装配坏了，
+          不是引擎在拒绝野图 —— 这条边界是第一次跑 CNB 时用真实日志换来的）。
   2. **失败没有被吞掉**：跑完 `--assert-fail-closed` 指定的 pytest 断言集，
      输出末行必须是 `N passed`（守卫在"用跳过/放宽来骗绿"时会暴露）。
 
@@ -30,8 +31,10 @@ _TOOLS_CHECKS = _REPO / "music_rebuild_project" / "tools" / "checks"
 if str(_TOOLS_CHECKS) not in sys.path:
     sys.path.insert(0, str(_TOOLS_CHECKS))
 
-#: oemer 报错里属于「引擎活着但拒绝/降级」的措辞（其余都视为故障）
-KNOWN_DEGRADATION = ("超时", "检查点", "未产出 MusicXML", "退出码")
+#: oemer 报错里属于「引擎活着但拒绝/降级」的措辞（其余都视为故障）。
+#: ⚠ 退出码/用法错误**不在此列**：CLI 参数写错、依赖缺失都表现为"退出了"，
+#: 长得像"引擎拒绝"，但它们恰恰是装配坏了 —— 必须红。
+KNOWN_DEGRADATION = ("超时", "检查点缺失", "未产出 MusicXML")
 
 
 def run_engine(image: Path, engines: tuple[str, ...] = ("oemer",)) -> tuple[bool, list[str]]:
@@ -60,6 +63,12 @@ def run_engine(image: Path, engines: tuple[str, ...] = ("oemer",)) -> tuple[bool
     if unknown:
         for eng, err in unknown.items():
             lines.append(f"[FAIL] OMR 引擎 {eng} 出现**未被归类**的异常：{err}")
+        return False, lines
+    # 兜底：归类词允许误伤（比如 stderr 里恰好出现「超时」），这里再显式挡一道
+    polluted = {e: err for e, err in m.errors.items() if "退出码" in err}
+    if polluted:
+        for eng, err in polluted.items():
+            lines.append(f"[FAIL] OMR 引擎 {eng} 以非零码退出 —— 装配坏了，不是野图被拒绝：{err}")
         return False, lines
 
     lines.append("[PASS] OMR 引擎活着，但对野上传如实降级/拒绝（已知类别）—— 未静默通过")

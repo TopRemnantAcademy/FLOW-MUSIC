@@ -202,5 +202,9 @@ def test_subprocess_is_used_and_no_download_on_measure(img: Path, fake_engine, m
 
     assert seen["timeout"] == A.OEMER_TIMEOUT_S, "子进程必须带超时"
     assert seen["kw"].get("start_new_session") is True, "必须有独立进程组才能连孙进程一起杀"
-    assert seen["cmd"][1:4] == ["-m", "oemer.ete", "-i"], f"应走 CLI 入口：{seen['cmd']}"
+    assert seen["cmd"][1:3] == ["-m", "oemer.ete"], f"应走模块 CLI 入口：{seen['cmd']}"
+    # oemer 0.1.8 的图片是**位置参数**：写成 `-i` 会得到退出码 2 的 usage 报错，
+    # 而那种报错在冒烟里长得像"引擎拒绝"（第一次 CNB 实测踩到）。
+    assert seen["cmd"][3].endswith(img.name) and not seen["cmd"][3].startswith("-")
+    assert "-i" not in seen["cmd"], "不得用 -i（oemer CLI 没有这个参数）"
     assert "退出码=1" in str(ei.value)
