@@ -7,3 +7,4 @@
 | 图像 | `song01_preprocessed_v001_blur300.jpeg`（带 JFIF 300 dpi 元数据，像素 1240×1754） |
 | 拍号 | 4/4（仅本 manifest 声明，谱面 `<time>` 缺失 —— 模拟 oemer 输出形态） |
 | 用途 | `api_trigger` 的 `mock-omr-wild-upload` 任务：把「野上传 → 全链路 OMR」固化成 fail-closed 断言 |
+| 已知行为 | oemer 0.1.8 在这张图上会挂在 `staffline_extraction.py:520 align_staffs`（`ValueError: max() iterable argument is empty`）：模糊后一条谱线都检不出，`all_staffs` 全空。**这是引擎的上游缺陷，不是流水线的通过与失败** —— 冒烟按「未归类异常 → 红」处理，并把该缺陷登记为已知问题（见 tests/wild_omr/README.md §诚实的边界）。 |

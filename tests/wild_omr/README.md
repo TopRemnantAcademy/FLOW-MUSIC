@@ -50,6 +50,33 @@ python tests/wild_omr/smoke_omr.py \
 所以不能简单地「errors 非空就红」；它只对**未归类**的异常报红（超时/检查点缺失/
 无 MusicXML/非零退出视为"引擎活着但拒绝"），再跑一遍 pytest 保证失败没被跳过掩盖。
 
+## 已知问题：oemer 对「一条谱线都检不出」的图会崩
+
+三次 CNB 实跑的完整记录（都是**真实**日志，不是推测）：
+
+| 轮次 | 现象 | 结论 |
+|---|---|---|
+| `cnb-j4o-1k549nn8d` | `-i` 参数错 → 退出码 2 的 usage 报错，冒烟却绿了 | 冒烟把「退出码」当降级 = 假绿，已修 |
+| `cnb-9cb-1k54a24hd` | 真跑 4m20s 后 `ValueError: max() iterable argument is empty` | 冒烟按预期**红**；但只抓到定位符，看不出帧 |
+| `cnb-c5k-1k54alg4k` | 同上，定位到 `oemer/staffline_extraction.py:520 align_staffs` | CLI 已对、引擎真跑、失败真被抓 |
+
+上游缺陷（0.1.8，源码已核对）：
+
+```python
+# oemer/staffline_extraction.py:341-342
+all_staffs = [...]            # 若每个 zone 都没检出谱线 → 这里是 []
+aligned_staffs = align_staffs(all_staffs)
+# :514  len_types = set(len(p) for p in staffs)  →  set()
+# :520  max_len = max(len_types)                 →  ValueError: max() iterable argument is empty
+```
+
+触发条件：预处理后的图**一条五线谱都检不出**（严重模糊/空白/极端畸变）。
+这是"野上传"里必然会有的输入类别。本仓的立场：**登记，不就地修上游**——
+
+- 修它要 monkey-patch 第三方推理库，超出本 issue 的「固化测试」范围；
+- 冒烟此刻的行为是**正确**的：把未归类异常报红，而不是伪造一个"引擎拒绝野图"的绿灯；
+- 真要修，应在 omr-qa 侧加一层「零谱线 → 提前返回空指标」的前置判断（独立 issue）。
+
 ## 诚实的边界（这里没验的）
 
 - **oemer 推理质量**：野上传本来就该被 G1 拦下，所以本包不断言"识别得多准"。
@@ -57,3 +84,6 @@ python tests/wild_omr/smoke_omr.py \
 - **超时阈值是否合理**：默认 420s 是"实测 ~2.4min/页 × 3"的经验值，不是测量结论；
   真页面的耗时分布需要在一批真实样本上统计（未做）。
 - **OCR 抽拍号**：断言 ③ 的 `engines=()` 刻意绕过 OCR，只锁"无来源 → 不许 PASS"这条链。
+- **断言 ①②③ 是**测试**层的结论；冒烟（第 5 阶段）在 oemer 现有缺陷下会红**：
+  它红的是"引擎对这类图会崩"，不是三处断言不成立。两者必须分开看，
+  否则要么把引擎缺陷当断言失败，要么把断言失败藏进引擎缺陷里。
