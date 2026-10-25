@@ -242,7 +242,10 @@ class Settings(BaseSettings):
     admin_token: str = ""  # 管理台访问密钥（X-Admin-Token）；为空则禁用 admin 路由
     admin_viewer_token: str = ""  # 只读管理员令牌；仅允许 GET，变更类接口返回 403
     google_client_id: str = ""  # Google OAuth Client ID（비우면 Google 로그인 비활성화）
-    encryption_key: str = ""  # Fernet 密钥（base64 32字节或任意口令自动派生）；生产必须设置
+    encryption_key: str = ""  # Fernet 密钥（base64 32字节）或任意口令（PBKDF2 派生）；生产必须设置
+    # PBKDF2 盐（2026-10-25 起使用，见 security/crypto.py）。盐无需保密，但应每部署
+    # 唯一（如 openssl rand -hex 16）——空则用内置默认盐，仅开发可接受。
+    encryption_salt: str = ""
 
     # ---- GAP-003 OAuth 授权码登录（Google / Kakao / Naver）----
     # 与上面 google_client_id（GIS ID 令牌直传腿）并存，二者互不影响：
@@ -427,20 +430,16 @@ class Settings(BaseSettings):
     )
 
     # ================= GAP-002 이메일 인증 / 비밀번호 재설정 / MFA =================
-    # 이메일 발송 채널 (표준 라이브러리 smtplib만 사용 — 제3자 메일 API를 날조하지 않는다).
-    # smtp_host 가 비어 있으면 "개발 모드": 실제 발송하지 않고 로그만 남긴다(warning).
-    # 자격증명이 준비되면 app/services/email.py 의 send_email() 함수 본문만 교체하면 된다.
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_username: str = ""
-    smtp_password: str = ""
-    # STARTTLS 사용 여부. 465(implicit TLS) 를 쓰는 경우엔 smtp_use_ssl=True 로 두고
-    # smtp_use_starttls=False 로 설정한다(둘은 상호배타 — 동시에 켜면 의미가 없다).
-    smtp_use_starttls: bool = True
-    smtp_use_ssl: bool = False
-    smtp_from: str = "no-reply@flow-music.local"  # From 헤더(서버가 거부하지 않는 주소로 교체)
-    smtp_timeout: float = 10.0  # 발송 타임아웃(초) — SMTP 서버 다운이 요청 스레드를 붙잡지 않게
-    # ENABLE_EMAIL_DELIVERY=True 인데 smtp_host 가 비어 있으면 → 503(조용한 "성공처럼 보임" 금지).
+    # 이메일 발송 채널 — **AWS SES via boto3** (2026-10-25 교체, 감사 결론).
+    # 종래 stdlib smtplib 직결은 자체 메일 발송 스택(禁手搓清单 「자체 SMTP」).
+    # boto3 는 AWS 공식 SDK 로 requirements.txt 에 이미 선언돼 있어 추가 의존성 0.
+    # AWS 자격증명은 boto3 표준 체인: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+    # 환경변수 또는 IAM Role — 프로젝트 자용 자격증명 변수를 새로 만들지 않는다.
+    # ses_source 가 비어 있으면 "개발 모드": 실제 발송하지 않고 로그만 남긴다(warning).
+    ses_region: str = "ap-northeast-2"  # AWS 지역 (서울; 서버와 동일 리전 권장)
+    ses_source: str = ""  # SES 에서 검증된 From 주소; 비어 있음 = 개발 모드
+    ses_timeout: float = 10.0  # 발송 타임아웃(초) — SES 다운이 요청 스레드를 붙잡지 않게
+    # ENABLE_EMAIL_DELIVERY=True 인데 ses_source 가 비어 있으면 → 503(조용한 "성공처럼 보임" 금지).
     enable_email_delivery: bool = False
 
     # 프론트엔드 베이스 URL — 메일 본문의 링크 생성용(비우면 cors_origins 첫 항목으로 폴백).
@@ -457,8 +456,8 @@ class Settings(BaseSettings):
     auth_lockout_minutes: int = 15
 
     # ================= GAP-021 通知通道（邮件 + Web Push） =================
-    # 邮件**复用**上面的 SMTP_* 一组变量（GAP-002 已落地），此处刻意不新造
-    # SMTP2_* / NOTIFY_MAIL_* 一套平行配置 —— 两套配置必然漂移，
+    # 邮件**复用**上面的 SES_* 一组变量（GAP-002 已落地），此处刻意不新造
+    # SES2_* / NOTIFY_MAIL_* 一套平行配置 —— 两套配置必然漂移，
     # 且运维要维护两份凭证。通知邮件走的正是 app/services/email.py:send_email()。
     #
     # Web Push（VAPID，RFC 8292）：

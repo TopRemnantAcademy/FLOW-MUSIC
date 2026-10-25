@@ -2,7 +2,7 @@
 
 本文件钉住的每一条，都对应一个"上线后才会发现"的具体失败：
 
-1. **未配置 ≠ 发送成功。** 无 SMTP / 无 VAPID 时端点必须回 202 + `sent=False` +
+1. **未配置 ≠ 发送成功。** 无 SES / 无 VAPID 时端点必须回 202 + `sent=False` +
    原因，而不是 200。一旦这里回归成 200，用户会永远等一封不会到的信，
    而工单里没有任何线索（服务端认为它成功了）。
 2. **VAPID 签名真的是 ES256 且可被验证。** 只断言"返回了字符串"等于没测 ——
@@ -25,11 +25,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 
 from app.config import settings
+from app.services import email as email_service
 from app.services import notification_store as store
 from app.services import notifications as notify
 
 # 固定的测试端点（**不触网**：所有用例都让通道停在"未配置"或"未安装发送器"，
-# 因此不会真的向 FCM/Mozilla 发请求，也不会真的连 SMTP）。
+# 因此不会真的向 FCM/Mozilla 发请求，也不会真的调 SES）。
 ENDPOINT = "https://fcm.googleapis.com/fcm/send/abc123-def456"
 KEYS = {"p256dh": "B" * 87, "auth": "a" * 22}
 
@@ -44,11 +45,11 @@ def _register(client, email: str = "notify@test.com") -> dict:
 def clean_env(tmp_path, monkeypatch):
     """每个用例独立的订阅文件 + 显式置空所有通道凭证。
 
-    不依赖"开发者本机恰好没配 SMTP"：显式 monkeypatch 成空值，
+    不依赖"开发者本机恰好没配 SES"：显式 monkeypatch 成空值，
     否则一个本地 .env 就能让"降级"用例变成"真发信"用例（且静默通过）。
     """
     monkeypatch.setattr(settings, "notification_store_path", str(tmp_path / "subs.jsonl"))
-    monkeypatch.setattr(settings, "smtp_host", "")
+    monkeypatch.setattr(settings, "ses_source", "")
     monkeypatch.setattr(settings, "enable_email_delivery", False)
     monkeypatch.setattr(settings, "vapid_private_key", "")
     monkeypatch.setattr(settings, "vapid_public_key", "")
@@ -105,7 +106,7 @@ def test_push_payload_is_pure_data_no_html(clean_env):
 # ───────────────────────── 2. 未配置时优雅降级 ─────────────────────────
 
 
-def test_send_email_without_smtp_degrades_not_raises(clean_env):
+def test_send_email_without_ses_degrades_not_raises(clean_env):
     r = notify.send_notification_email(notify.NOTIFY_SYSTEM, "u@test.com", {"message": "hi"})
     assert r.sent is False
     assert r.reason == "email_not_configured"
@@ -434,81 +435,85 @@ def test_test_endpoint_rate_limited(client, clean_env, monkeypatch):
 # ───────────────── 6. 配好凭证时「真的发了」（不只是降级） ─────────────────
 
 
-def test_configured_smtp_actually_sends(clean_env, monkeypatch):
+def test_configured_ses_actually_sends(clean_env, monkeypatch):
     """★ 反向断言：上一节的 202 降级不能成为「永远不发送」的遮羞布。★
 
-    用假 SMTP 类顶掉 smtplib 的入口（不触网），验证配好 SMTP_HOST 后
-    `sent=True` 且**邮件真的被交出去**（主题/收件人/正文都对）。
+    用假 SES 客户端顶掉 boto3.client 的入口（不触网），验证配好 SES_SOURCE 后
+    `sent=True` 且**邮件真的被交出去**（Source/收件人/主题/正文都对）。
     只测降级 = 把"通道坏了"和"通道没配"混为一谈，上线后分不清。
     """
-    import smtplib
+    import boto3
 
     sent: list = []
 
-    class FakeSMTP:
-        def __init__(self, host, port, timeout=None):
-            sent.append({"host": host, "port": port})
+    class FakeSES:
+        def send_email(self, **kw):
+            sent.append(kw)
+            return {"MessageId": "fake-message-id-0001"}
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def starttls(self):
-            sent.append({"starttls": True})
-
-        def login(self, u, p):
-            sent.append({"login": u, "password_len": len(p)})
-
-        def send_message(self, msg):
-            sent.append({"to": msg["To"], "subject": msg["Subject"], "body": msg.get_content()})
-
-    monkeypatch.setattr(settings, "smtp_host", "smtp.test.invalid")
-    monkeypatch.setattr(settings, "smtp_username", "bot@test.invalid")
-    monkeypatch.setattr(settings, "smtp_password", "s3cret-password")
-    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    monkeypatch.setattr(settings, "ses_source", "no-reply@flow-music.test")
+    monkeypatch.setattr(boto3, "client", lambda *a, **kw: FakeSES())
 
     r = notify.send_notification_email(
         notify.NOTIFY_GENERATION_DONE, "listener@test.com", {"song_id": 12, "title": "晨祷"}
     )
     assert r.sent is True and r.reason == "email_sent"
     final = sent[-1]
-    assert final["to"] == "listener@test.com"
-    assert "生成完成" in final["subject"]
-    assert "《晨祷》" in final["body"] and "/songs/12" in final["body"]
-    # 凭证只用于 login，绝不进日志/响应（这里顺带确认它确实被用上了）
-    assert any(x.get("login") == "bot@test.invalid" for x in sent)
+    assert final["Source"] == "no-reply@flow-music.test"
+    assert final["Destination"]["ToAddresses"] == ["listener@test.com"]
+    assert "生成完成" in final["Message"]["Subject"]["Data"]
+    assert "《晨祷》" in final["Message"]["Body"]["Text"]["Data"]
+    assert "/songs/12" in final["Message"]["Body"]["Text"]["Data"]
 
 
-def test_email_body_never_leaks_password(clean_env, monkeypatch, caplog):
-    """SMTP 密码绝不能进日志 —— 通知邮件走了同一条 send_email seam，同样受约束。"""
-    import logging
-    import smtplib
+def test_email_credentials_never_leak_to_logs(clean_env, monkeypatch):
+    """SES 发送失败时 AWS 凭证/异常细节绝不能进日志 —— 通知邮件走同一条 seam。
 
-    class BoomSMTP:
-        def __init__(self, *a, **kw):
-            pass
+    email.py 的失败日志只允许出现：region + 异常**类名**（ClientError）。
+    异常消息体（可能含账号/ARN 细节）与任何凭证形状都不得出现。
 
-        def __enter__(self):
-            return self
+    直接 spy `email_service.logger` 的方法，绕开 pytest caplog 的全局状态
+    依赖（全量运行时 caplog 捕获链偶发空转，已在排查中）。
+    """
+    import re
 
-        def __exit__(self, *a):
-            return False
+    import boto3
+    from botocore.exceptions import ClientError
 
-        def starttls(self):
-            pass
+    logged: list = []
 
-        def send_message(self, msg):
-            raise smtplib.SMTPException("boom")
+    def _spy(msg, *args, **kwargs):
+        if args:
+            try:
+                logged.append(msg % args)
+                return
+            except Exception:
+                pass
+        logged.append(str(msg))
 
-    monkeypatch.setattr(settings, "smtp_host", "smtp.test.invalid")
-    monkeypatch.setattr(settings, "smtp_password", "TOP-SECRET-PW")
-    monkeypatch.setattr(smtplib, "SMTP", BoomSMTP)
-    with caplog.at_level(logging.DEBUG):
-        r = notify.send_notification_email(notify.NOTIFY_SYSTEM, "x@test.com", {"message": "m"})
+    monkeypatch.setattr(email_service.logger, "error", _spy)
+    monkeypatch.setattr(email_service.logger, "exception", _spy)
+
+    class BoomSES:
+        def send_email(self, **kw):
+            raise ClientError(
+                {"Error": {"Code": "MessageRejected", "Message": "arn:aws:iam::123456789012:user/ops not verified"}},
+                "SendEmail",
+            )
+
+    monkeypatch.setattr(settings, "ses_source", "no-reply@flow-music.test")
+    monkeypatch.setattr(boto3, "client", lambda *a, **kw: BoomSES())
+    r = notify.send_notification_email(notify.NOTIFY_SYSTEM, "x@test.com", {"message": "m"})
     assert r.sent is False and r.reason == "email_send_failed"
-    assert "TOP-SECRET-PW" not in caplog.text
+    joined = "\n".join(logged)
+    # 异常消息体（含 ARN 细节）不得进日志
+    assert "arn:aws:iam" not in joined
+    assert "not verified" not in joined
+    # 凭证形状（AWS AccessKey）不得进日志
+    assert not re.search(r"AKIA[0-9A-Z]{16}", joined)
+    # 类名级信息允许出现（可观测性所需），region 必须出现（定位需要）
+    assert "ClientError" in joined
+    assert settings.ses_region in joined
 
 
 def test_push_endpoint_is_credential_and_not_logged_in_full(clean_env, monkeypatch, caplog):

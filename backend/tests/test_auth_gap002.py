@@ -1,7 +1,7 @@
 """GAP-002: 이메일 인증 / 비밀번호 재설정 / MFA / 계정 잠금.
 
 테스트 원칙
-1. **실제 SMTP 를 건드리지 않는다.** `send_email` 을 monkeypatch 로 가로채
+1. **실제 SES 를 건드리지 않는다.** `send_email` 을 monkeypatch 로 가로채
    메일 본문을 캡처한다.
 2. **token 은 메일 본문에서 추출한다.** 내부 헬퍼를 직접 호출해 token 을 얻는 테스트는
    "사용자가 실제로 밟는 경로"를 검증하지 못한다 — 링크가 깨져도 통과한다.
@@ -21,7 +21,7 @@ from app.services import email as email_service
 
 @pytest.fixture
 def outbox(monkeypatch):
-    """발송된 메일을 모으는 가짜 outbox. 실제 SMTP 는 절대 호출되지 않는다."""
+    """발송된 메일을 모으는 가짜 outbox. 실제 SES 는 절대 호출되지 않는다."""
     sent: list[dict] = []
 
     def fake_send_email(to: str, subject: str, body: str) -> bool:
@@ -628,22 +628,22 @@ def test_token_digest_is_sha256_length(client, outbox):
     assert re.fullmatch(r"[0-9a-f]{64}", stored)
 
 
-# ── 9. email 서비스 계층 (SMTP 미구성 시 개발 모드) ──
+# ── 9. email 서비스 계층 (SES 미구성 시 개발 모드) ──
 
 
 def test_email_service_dev_mode_does_not_raise(monkeypatch):
-    """SMTP 미구성(개발) → 예외 없이 로그만(미발송 False)."""
-    monkeypatch.setattr(email_service.settings, "smtp_host", "")
+    """SES 미구성(개발) → 예외 없이 로그만(미발송 False)."""
+    monkeypatch.setattr(email_service.settings, "ses_source", "")
     monkeypatch.setattr(email_service.settings, "enable_email_delivery", False)
     assert email_service.delivery_configured() is False
     assert email_service.send_email("x@y.z", "s", "b") is False
 
 
 def test_email_service_fails_closed_when_delivery_required(monkeypatch):
-    """⚠ 운영 의도(enable_email_delivery=True)인데 host 미설정 → 503 (거짓 성공 금지)."""
+    """⚠ 운영 의도(enable_email_delivery=True)인데 source 미설정 → 503 (거짓 성공 금지)."""
     from fastapi import HTTPException
 
-    monkeypatch.setattr(email_service.settings, "smtp_host", "")
+    monkeypatch.setattr(email_service.settings, "ses_source", "")
     monkeypatch.setattr(email_service.settings, "enable_email_delivery", True)
     with pytest.raises(HTTPException) as ei:
         email_service.ensure_delivery_available()
@@ -651,10 +651,10 @@ def test_email_service_fails_closed_when_delivery_required(monkeypatch):
 
 
 def test_totp_rfc4226_vectors():
-    """TOTP/HOTP 구현을 RFC 4226 부록 D 고정 벡터로 검증.
+    """TOTP/HOTP (pyotp 위임) 를 RFC 4226 부록 D 고정 벡터로 검증.
 
-    자체 구현이므로 명세 대조가 필수 — Google Authenticator 와 어긋나면
-    사용자가 전부 로그인 불가가 된다.
+    구현은 pyotp 에 위임하지만, Google Authenticator 와 어긋나면
+    사용자가 전부 로그인 불가가 된다 — 명세 대조는 여전히 필수다.
     """
     import base64
 

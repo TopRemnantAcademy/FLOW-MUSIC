@@ -12,6 +12,9 @@ python-jose[cryptography]==3.4.0
 # 此前会因 ModuleNotFoundError: No module named 'jwt' 中断 collect。CNB build ② 即因此失败，
 # 已在 build ③ 内联 `pip install PyJWT` 验证修复，此处落地为永久 manifest 修复。
 PyJWT==2.9.0
+# TOTP/HOTP（RFC 6238/4226）—— MIT。2026-10-25 替换原手搓实现（security/totp.py），
+# 库提供常量时间比较 + valid_window 漂移容忍 + RFC 4226 附录 D 兼容向量。
+pyotp==2.10.0
 cryptography>=42.0.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1

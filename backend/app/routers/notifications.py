@@ -2,7 +2,7 @@
 
 三条通道状态各有**明确的失败语义**，不混在一起：
 
-  · 邮件      —— 复用 GAP-002 的 `app/services/email.py`（stdlib smtplib）。
+  · 邮件      —— 复用 GAP-002 的 `app/services/email.py`（boto3 → AWS SES）。
   · Web Push  —— VAPID(JWT/ES256) 签名只用 `cryptography`（已在 requirements）；
                  实际 POST 需要可选的 `pywebpush`，未装 → 降级为待推送队列。
   · 未配置    —— 一律 **202 Accepted-but-not-sent**，响应体里给 `reason` 与
