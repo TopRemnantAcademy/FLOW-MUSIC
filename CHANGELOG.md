@@ -66,6 +66,9 @@
 
 - 出站 Webhook 投递增加 SSRF 守卫与 HMAC 签名校验 (`297a2fe`)
 - 上传文件增加文件头魔数校验、体积上限与限流（`routers/songs.py`、`tests/test_upload_security.py`）
+- **安全整改（禁手搓清单）**：口令→加密密钥的派生改用标准 PBKDF2-HMAC（SHA-256，60 万迭代、加盐），
+  邮件通道改用 AWS SES 官方 SDK（boto3），一次性密码改用 PyOTP；外部服务失败日志不再记录凭证或异常消息体，
+  仅保留区域与异常类名 (`b0c53f1`)
 
 ### 文档
 
