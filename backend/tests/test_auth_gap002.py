@@ -673,3 +673,15 @@ def test_totp_verify_window_and_replay_guard():
     assert totp.verify(secret, totp.totp(secret, at=119), at=59) is False  # +2 스텝
     assert totp.verify(secret, "abcdef", at=59) is False
     assert totp.verify("", "123456", at=59) is False
+
+
+def test_totp_verify_corrupted_secret_returns_false():
+    """★ DB 의 mfa_secret 이 손상돼도 검증은 False — 500 으로 새어나가면 안 된다.
+
+    pyotp 의 base32 디코딩은 비-base32 문자/잘못된 패딩에서
+    `binascii.Error`(ValueError 하위) 를 던진다. verify 가 이를 삼키지 않으면
+    로그인 엔드포인트가 500 을 내며 "이 계정 MFA 가 깨졌다"를 노출한다.
+    """
+    assert totp.verify("invalid!!!", "123456") is False
+    assert totp.verify("notbase32", "123456") is False
+    assert totp.verify("JBSWY3DPEHPK3PXP", "000000") is False  # 정상 base32·오답

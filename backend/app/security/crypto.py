@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+from functools import lru_cache
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -51,15 +52,27 @@ def _salt() -> bytes:
     return (settings.encryption_salt or "").strip().encode("utf-8") or _KDF_SALT_FALLBACK
 
 
-def _derive_key_pbkdf2(material: str) -> bytes:
-    """口令 → Fernet 키 (PBKDF2-HMAC-SHA256, 600k 회). v2 표준 경로."""
+@lru_cache(maxsize=8)
+def _derive_key_cached(material: str, salt: bytes) -> bytes:
+    """(material, salt) → Fernet 키 (PBKDF2-HMAC-SHA256, 600k 회).
+
+    ⚠ 캐시는 선택이 아니라 **필수**다: 600k 회 ≈0.27s 이므로 캐시가 없으면
+    `decrypt_secret`/`encrypt_secret` 호출마다(즉 모델 속성 접근마다) 0.27s 를
+    지불한다. settings 는 프로세스 수명 동안 고정 → 적중률 사실상 100%.
+    material/salt 가 바뀌면(테스트/재설정) 키도 새로 파생된다(최대 8개 유지).
+    """
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=_salt(),
+        salt=salt,
         iterations=_KDF_ITERATIONS,
     )
     return base64.urlsafe_b64encode(kdf.derive(material.encode("utf-8")))
+
+
+def _derive_key_pbkdf2(material: str) -> bytes:
+    """口令 → Fernet 키 (PBKDF2-HMAC-SHA256, 600k 회). v2 표준 경로."""
+    return _derive_key_cached(material, _salt())
 
 
 def _raw_key() -> bytes:

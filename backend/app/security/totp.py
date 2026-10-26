@@ -45,16 +45,24 @@ def verify(secret: str, code: str, valid_window: int = 1, at: float | None = Non
 
     비교는 pyotp 내부에서 hmac.compare_digest (상수시간) — 타이밍
     사이드채널 차단. 형식 오류 입력(비숫자/오답)은 자연스럽 False.
+
+    ⚠ DB 의 mfa_secret 이 손상된 경우(비-base32 문자/잘못된 패딩) pyotp 는
+    `binascii.Error`(ValueError 하위) 를 던진다 → 검증 함수는 예외를 밖으로
+    흘리지 않는다(로그인 500 으로 "이 계정 MFA 가 깨졌다"를 노출하지 않기 위해).
+    손상 secret = 검증 실패로 처리한다.
     """
     if not secret or not code:
         return False
-    return pyotp.TOTP(secret, interval=PERIOD_SECONDS).verify(
-        str(code).strip(), for_time=at, valid_window=valid_window
-    )
+    try:
+        return pyotp.TOTP(secret, digits=DIGITS, interval=PERIOD_SECONDS).verify(
+            str(code).strip(), for_time=at, valid_window=valid_window
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 def provisioning_uri(secret: str, account: str, issuer: str = DEFAULT_ISSUER) -> str:
     """otpauth:// URI — QR 코드 생성용 표준 문자열(Google Authenticator 관례)."""
-    return pyotp.TOTP(secret, interval=PERIOD_SECONDS).provisioning_uri(
+    return pyotp.TOTP(secret, digits=DIGITS, interval=PERIOD_SECONDS).provisioning_uri(
         name=account, issuer_name=issuer
     )

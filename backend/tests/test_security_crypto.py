@@ -53,3 +53,27 @@ def test_model_helper():
     e.set_api_key("")
     assert e.api_key == ""
     assert e.get_api_key() is None
+
+
+def test_pbkdf2_derivation_is_cached():
+    """★ 派生结果必须缓存：600k 迭代 ≈0.27s。
+
+    若不缓存，每次 encrypt/decrypt（= 每次 EngineConfig.api_key 属性访问）
+    都要重付 0.27s，成为每请求的隐形税。首次应真的跑 PBKDF2，第二次必须
+    命中缓存（微秒级）。
+    """
+    import time
+
+    from app.security import crypto
+
+    crypto._derive_key_cached.cache_clear()
+    t0 = time.perf_counter()
+    crypto._derive_key_pbkdf2("cache-test-material")
+    first = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    crypto._derive_key_pbkdf2("cache-test-material")
+    second = time.perf_counter() - t0
+
+    assert first > 0.05, f"首次派生应真的执行 600k 迭代（实测 {first:.4f}s）"
+    assert second < 0.01, f"第二次应命中缓存（实测 {second:.4f}s）"
+    assert second < first / 10
