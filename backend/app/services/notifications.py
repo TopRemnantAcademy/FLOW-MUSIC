@@ -166,7 +166,7 @@ def email_configured() -> bool:
 
 
 def send_notification_email(kind: str, to: str, ctx: dict[str, Any]) -> DeliveryResult:
-    """按模板发一封通知邮件。未配置 SMTP → 降级（不抛异常）。
+    """按模板发一封通知邮件。未配置 SES → 降级（不抛异常）。
 
     ⚠ 与 GAP-002 的 `ensure_delivery_available()`（fail-closed 503）**有意不同**：
     那条路是"用户点了我忘了密码，你说发了其实没发"——必须响亮失败。
@@ -175,7 +175,7 @@ def send_notification_email(kind: str, to: str, ctx: dict[str, Any]) -> Delivery
     """
     subject, body = render_email(kind, ctx)
     if not email_configured():
-        logger.warning("[notify] 邮件通道未配置(SMTP_HOST 空) — 降级未发送 kind=%s", kind)
+        logger.warning("[notify] 邮件通道未配置(SES_SOURCE 空) — 降级未发送 kind=%s", kind)
         return DeliveryResult(sent=False, reason="email_not_configured")
     try:
         ok = email_service.send_email(to, subject, body)

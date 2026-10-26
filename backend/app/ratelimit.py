@@ -177,7 +177,7 @@ def rate_limit_notification_subscribe(user_key: str) -> None:
 
 
 def rate_limit_notification_test(user_key: str) -> None:
-    """GAP-021 自检限流。每次自检会**真的发信 + 发推**：邮件走 SMTP 配额，
+    """GAP-021 自检限流。每次自检会**真的发信 + 发推**：邮件走 SES 配额，
     推送会打到第三方网关（FCM/Mozilla），无限流即可被用来刷爆发信域名信誉
     （后果是正常验证邮件也被判垃圾），属于必须有的护栏。"""
     _sliding_window(

@@ -103,8 +103,8 @@ class VapidKeyResp(BaseModel):
     subject: str
 
 
-# 未配置时该配的环境变量名（与 .env.example 逐字一致，测试会核对）。
-_EMAIL_ENV = ["SMTP_HOST", "SMTP_PORT", "SMTP_FROM"]
+# 未配置时该配的环境变量名（SES 迁移后：SES_SOURCE 必填 + AWS 凭证走 boto3 标准链）。
+_EMAIL_ENV = ["SES_SOURCE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
 _PUSH_ENV = ["VAPID_PRIVATE_KEY", "VAPID_PUBLIC_KEY", "VAPID_SUBJECT"]
 
 

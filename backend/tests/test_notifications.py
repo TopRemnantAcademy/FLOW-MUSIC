@@ -195,7 +195,7 @@ def test_test_endpoint_returns_202_with_reasons_when_unconfigured(client, clean_
     assert by_channel["push"]["sent"] is False
     # 降级路径必须自我说明：要么说 VAPID 没配，要么说发送器没装。
     assert by_channel["push"]["reason"] in ("vapid_not_configured", "pywebpush_not_installed")
-    assert "SMTP_HOST" in body["required_env"]
+    assert "SES_SOURCE" in body["required_env"]
     assert "VAPID_PRIVATE_KEY" in body["required_env"]
 
 
