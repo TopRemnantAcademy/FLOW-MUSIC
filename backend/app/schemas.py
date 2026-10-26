@@ -31,6 +31,8 @@ class MeResp(BaseModel):
     # GAP-002: 프론트가 "인증 메일 재발송" 배너를 띄울지 판단하는 근거.
     email_verified: bool = False
     mfa_enabled: bool = False
+    # GAP-021: 生成完成通知偏好（默认关；前端据此绘制开关）。
+    notify_generation_done_enabled: bool = False
 
 
 # ---------- GAP-002 이메일 인증 / 비밀번호 재설정 / MFA ----------

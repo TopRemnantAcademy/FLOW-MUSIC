@@ -103,6 +103,18 @@ class VapidKeyResp(BaseModel):
     subject: str
 
 
+class NotificationPrefsReq(BaseModel):
+    """用户通知偏好（PATCH 更新）。当前只有"生成完成通知"一项。"""
+
+    notify_generation_done_enabled: bool
+
+
+class NotificationPrefsResp(BaseModel):
+    """用户通知偏好（GET 读取）。镜像 NotificationPrefsReq 的字段。"""
+
+    notify_generation_done_enabled: bool
+
+
 # 未配置时该配的环境变量名（SES 迁移后：SES_SOURCE 必填 + AWS 凭证走 boto3 标准链）。
 _EMAIL_ENV = ["SES_SOURCE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
 _PUSH_ENV = ["VAPID_PRIVATE_KEY", "VAPID_PUBLIC_KEY", "VAPID_SUBJECT"]
@@ -224,6 +236,39 @@ def test_channel(
                 required.extend(_PUSH_ENV)
 
     return TestResp(accepted=True, results=results, required_env=sorted(set(required)))
+
+
+# ─────────────────── 用户通知偏好（GAP-021 接线配套） ───────────────────
+
+
+@router.get("/preferences", response_model=NotificationPrefsResp)
+def get_notification_prefs(user: User = Depends(get_current_user)):
+    """读取当前用户通知偏好（目前只有"生成完成通知"开关）。
+
+    与 /api/auth/me 上的同源字段一致 —— 这里提供独立端点是为了让"通知设置页"
+    只拉通知相关状态，不必每次都拉整套用户档案。
+    """
+    return NotificationPrefsResp(
+        notify_generation_done_enabled=bool(user.notify_generation_done_enabled)
+    )
+
+
+@router.patch("/preferences", response_model=NotificationPrefsResp)
+def set_notification_prefs(
+    body: NotificationPrefsReq,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """更新当前用户通知偏好（目前只有"生成完成通知"开关）。
+
+    默认关（opt-in）：用户显式打开后，生成完成的作品才会通过邮件 + 已登记设备推送
+    通知他（见 routers/songs.py:_finalize_song 与 notify_generation_done）。
+    """
+    user.notify_generation_done_enabled = bool(body.notify_generation_done_enabled)
+    db.commit()
+    return NotificationPrefsResp(
+        notify_generation_done_enabled=bool(user.notify_generation_done_enabled)
+    )
 
 
 # ─────────────────── 供业务代码调用的模板化发送 ───────────────────

@@ -9,8 +9,12 @@
    推送网关是拿公钥真验签的。这里用 cryptography 反验一次，顺带核
    `aud` 是 origin（不是完整端点路径）、`exp` ≤ 24h 上限（这两个是网关硬约束）。
 3. **订阅是用户级的。** 别人的 endpoint 既不能被退订，也不会出现在我的自检里。
-4. **订阅不落业务表。** GAP-021 明确禁改 models.py / 禁新增迁移；
-   若有人日后"顺手"把它塞进 User，本文件的断言会红。
+4. **订阅不落业务表（特指 Web Push 订阅端点）。** GAP-021 明确禁把"订阅端点"
+   （设备凭据：push_endpoint / web_push_subscription）塞进 models.py / 新表，
+   若有人日后"顺手"把它塞进 User 或新表，本文件的断言会红。
+   ⚠ 注意：这条硬约束**只针对订阅端点**，不禁止「用户通知偏好」这类账户级开关
+   （如本仓库后续的 notify_generation_done_enabled，它走独立迁移 l1a2b3c4d5e6，
+   语义是"是否愿意被通知"，与"设备订阅凭据"两回事）。
 5. **载荷里没有可执行内容。** 推送载荷要过第三方网关，塞 HTML/脚本就是把 XSS 面
    交给中间人。
 """
@@ -323,10 +327,14 @@ def test_vapid_public_key_endpoint_reports_configured(client, vapid_keys):
 
 
 def test_store_does_not_touch_orm_metadata():
-    """GAP-021 硬约束：禁改 models.py / 禁新增迁移。
+    """GAP-021 硬约束（**仅限 Web Push 订阅端点**）：订阅凭据不得进 models.py / 新表。
 
     若日后有人把订阅"顺手"塞进 User 或新表，本断言会红 ——
     那一步必须等 #90 的迁移槽，而不是混在通知 PR 里。
+
+    ⚠ 故意**不**断言"User 上不能有任何通知相关列"：用户通知偏好（如
+    notify_generation_done_enabled，迁移 l1a2b3c4d5e6）是合法的账户级开关，
+    与"设备订阅凭据"语义不同，不受此约束。本条只锁死订阅端点字段。
     """
     from app.db import Base
     from app.models import User

@@ -61,6 +61,14 @@ class User(Base):
     oauth_provider = Column(String(32), nullable=True)  # google | kakao | naver
     oauth_sub = Column(String(255), nullable=True)  # provider 侧唯一用户标识
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # GAP-021（生成完成通知）：用户级偏好开关。
+    # ⚠ 默认关（opt-in）= 严格保守：避免无条件邮件骚扰 + 未配置 SES 时的无效发信成本。
+    # 与「Web Push 订阅不落表」的硬约束（test_notifications.py:test_store_does_not_touch_orm_metadata）
+    # 是**两件事**：那是「订阅端点」（设备凭据，刻意不入业务表），这是「是否愿意被通知」
+    # 的账户偏好，语义不同，故合法地落在 users 上。
+    notify_generation_done_enabled = Column(
+        Boolean, default=False, nullable=False, server_default=false()
+    )
 
     __table_args__ = (
         # 同一 provider 的同一 sub 只能对应一个账号（并发首登的最终防线）。

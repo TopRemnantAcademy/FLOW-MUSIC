@@ -531,6 +531,7 @@ def me(user: User = Depends(get_current_user)) -> MeResp:
         email=user.email,
         email_verified=bool(user.email_verified),
         mfa_enabled=bool(user.mfa_enabled),
+        notify_generation_done_enabled=bool(user.notify_generation_done_enabled),
     )
 
 

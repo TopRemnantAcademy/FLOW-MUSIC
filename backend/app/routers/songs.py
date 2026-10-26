@@ -757,6 +757,24 @@ async def _finalize_song(song: Song, db: Session, result) -> None:
     except Exception as e:
         log.warning("歌曲 %s webhook 排队失败: %s", getattr(song, "id", "?"), e)
 
+    # GAP-021：生成完成通知（用户偏好开关；默认关 = opt-in）。
+    # 放在收尾里与 webhook/CDN/Tag 同理 —— 所有生成路径（generate/easy/instrumental/
+    # region-edit/spawn）必经此处，新端点天然继承；且失败只降级，绝不把「生成成功」
+    # 变成「生成失败」或拖慢关键路径（计费/编排）。
+    # 门控：① 仅 completed（failed 不通知）；② 仅当用户显式开启偏好，避免无条件邮件
+    # 骚扰 + 未配置 SES 时的无效发信成本。notify_generation_done 内部也已吞掉所有异常。
+    if result.status == "completed":
+        try:
+            owner = db.get(User, song.user_id)
+            if owner and getattr(owner, "notify_generation_done_enabled", False):
+                from app.routers.notifications import notify_generation_done
+
+                notify_generation_done(db, owner, song.id, song.title or "")
+        except Exception as e:  # noqa: BLE001 — 通知绝不能影响作品状态
+            log.warning(
+                "歌曲 %s 生成完成通知失败（忽略）: %s", getattr(song, "id", "?"), e
+            )
+
 
 async def _process_song(song_id: int):
     db = SessionLocal()
