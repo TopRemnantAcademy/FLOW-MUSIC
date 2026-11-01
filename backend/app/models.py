@@ -183,6 +183,11 @@ class Song(Base):
     # ⚠ 不建数据库级默认值：默认值（如 now()）会让「刚插入的歌 = 已删除」，
     #   而这里的 NULL 是有语义的（未删除），不能靠 server_default 兜底。
     deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    # ---- Score-to-Music: 업로드된 악보 원본 보관 URL ----
+    # 생성 이후에도 "악보 원본 그대로" 보관 → 재생성 / 감사 / OMR 재시도 근거.
+    # 빈 문자열 = 악보 경로가 아닌 일반 생성. /from-score 업로드 경로에서만 채워짐.
+    # (관리자 감사 데이터라 SongOut 목록/발견 응답엔 빠짐 — lyrics_sync 노출 정책과 동일.)
+    score_url = Column(Text, default="", server_default="", nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

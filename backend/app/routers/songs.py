@@ -10,7 +10,7 @@ import datetime
 import json
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
@@ -58,7 +58,7 @@ from app.entitlements import (
     can_download,
     preview_seconds,
 )
-from app.routers.auth import get_current_user, get_optional_user
+from app.routers.auth import get_current_user, get_optional_user, require_admin
 from app.storage import mirror as cdn_mirror
 from app.storage.transport import full_audio_url
 from app.security.ssrf import ssrf_guard
@@ -1079,6 +1079,159 @@ async def generate_song(
         )
 
     song = _create_song(req, user, db)
+    bg.add_task(_process_song, song.id)
+    return GenerateResp(song_id=song.id, status=song.status)
+
+
+# ---------------------------------------------------------------------------
+# 악보 → 음악: 업로드한 악보(이미지/PDF/MusicXML)를 텍스트→음악 엔진 입력으로 변환 후 생성.
+# 실제 오디오 생성은 기존 _process_song → generate() 를 재사용 (task_type="from_score").
+# ---------------------------------------------------------------------------
+_FROM_SCORE_MAX_BYTES = 20 * 1024 * 1024  # 악보 이미지/PDF 는 클 수 있음 (20MB)
+
+# 업로드된 악보 원본의 Content-Type 매핑 (보관 시 정확히 기록 → CDN 캐시 응답 헤더 정확).
+# s3.upload_bytes 의 ContentType 은 CDN 엣지가 캐시하는 응답 헤더라 잘못 적으면
+# <audio>/<img> 가 거부하거나 잘못된 타입으로 오래 캐시됨 (app/storage/s3.py:48 주석 참조).
+_SCORE_CONTENT_TYPE: dict[str, str] = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "bmp": "image/bmp",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+    "webp": "image/webp",
+    "pdf": "application/pdf",
+    "musicxml": "application/xml",
+    "xml": "application/xml",
+    "mxl": "application/xml",
+}
+
+
+@router.post("/from-score", response_model=GenerateResp)
+async def from_score(
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    style: str = Form(""),
+    vocal_gender: str = Form(""),
+    content_category: str = Form("general"),
+    license: str = Form(""),
+    make_instrumental: bool = Form(False),
+    bg: BackgroundTasks = BackgroundTasks(),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),  # 관리자 전용: 일반 사용자 호출 차단 (admin UI / 백엔드 전용 기능)
+    user: User = Depends(get_current_user),
+):
+    """POST /api/songs/from-score — 악보 업로드 → 음악 생성 (관리자 전용).
+
+    - MusicXML(.musicxml/.xml/.mxl): OMR 없이 직접 파싱 → prompt/lyric/style 생성.
+    - 이미지/PDF: OMR(oemer) 로 MusicXML 인식 후 동일 변환. 단, oemer 미설치 노드에서는 501.
+    - 변환된 텍스트는 기존 텍스트→음악 경로(Mureka 등)로 생성되므로 별도 provider 불필요.
+    - 게이팅: ``require_admin``(X-Admin-Token) + ``get_current_user``(곡 소유자). 공개 앱/웹엔
+      노출하지 않고, 관리자(소유자/어시스턴트)만 백엔드/CLI 로 사용. 추후 유저 공개 시
+      게이트만 제거하면 됨.
+    사용법은 ``scripts/from_score_upload.py`` 참고.
+    """
+    rate_limit_generate(str(user.id))
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다")
+    if len(data) > _FROM_SCORE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"악보 파일이 20MB 를 초과합니다（현재 {len(data) / 1024 / 1024:.1f}MB）",
+        )
+
+    from app.score import (
+        OMRFailed,
+        OMRTimeoutError,
+        OMRUnavailable,
+        ScoreConversionError,
+        UnsupportedScoreFormat,
+        score_to_prompt,
+        validate_prompt,
+    )
+
+    try:
+        sp = await run_in_threadpool(
+            score_to_prompt,
+            data,
+            file.filename or "score.musicxml",
+            title=title or None,
+            style_hint=style or None,
+        )
+    except UnsupportedScoreFormat as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OMRUnavailable as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except (OMRTimeoutError, OMRFailed) as e:
+        raise HTTPException(status_code=502, detail=f"악보 인식 실패: {e}")
+    except ScoreConversionError as e:
+        raise HTTPException(status_code=400, detail=f"악보 변환 실패: {e}")
+
+    # 신뢰성 게이트 (OMR fail-closed): 추출이 부실하면 생성하지 않고 422 거부.
+    # - 멜로디 0개(critical): 어느 입력이든 생성 불가 → 항상 거부.
+    # - OMR(이미지/PDF) 저신뢰: 인식 실패 시 음표/화성이 비어 있을 수 있어 거부.
+    # - MusicXML(Tier-1): 파일 자체가 권위 있으므로 저신뢰라도 거부하지 않음
+    #   (템포/화성 누락은 작곡가 선택일 수 있음). 단, 멜로디 없으면 위에서 거부.
+    fname = (file.filename or "").lower()
+    is_omr_source = fname.endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp", ".pdf"))
+    v = validate_prompt(sp)
+    reasons = v.critical + v.warnings
+    if not v.ok or (is_omr_source and v.low_confidence):
+        raise HTTPException(
+            status_code=422,
+            detail="악보에서 충분한 음악 정보를 추출하지 못했습니다: "
+            + "; ".join(reasons)
+            + " (악보를 다시 촬영/스캔하거나 MusicXML 익스포트를 업로드하세요)",
+        )
+
+    # 순수 텍스트 경로와 동일한 기본 검증 (기본값 켜짐)
+    text_to_check = (sp.lyric or "") + "\n" + (sp.prompt or "")
+    if settings.enable_moderation and not moderation.check_lyric(text_to_check):
+        raise HTTPException(status_code=400, detail="내용이 검수를 통과하지 못했습니다")
+    if sp.lyric and len(sp.lyric) > 5000:
+        raise HTTPException(
+            status_code=400,
+            detail=f"변환된 가사가 5000자를 초과합니다（현재 {len(sp.lyric)}자）",
+        )
+
+    # 악보에 가사가 없으면 연주곡으로 처리 (순수 악기곡 악보 → instrumental)
+    instrumental = bool(make_instrumental) or not sp.lyric.strip()
+
+    req = GenerateReq(
+        task="from_score",
+        title=sp.title or title or "未命名",
+        style=sp.style,
+        prompt=sp.prompt,
+        lyric=sp.lyric,
+        vocal_gender=vocal_gender or None,
+        make_instrumental=instrumental,
+        content_category=content_category,
+        license=license or None,
+    )
+    song = _create_song(req, user, db)
+
+    # ---- v2: 업로드된 악보 원본 보관 (재생성/감사/OMR 재시도 근거) ----
+    # storage 미설정 노드(프로덕션 포함)에서는 no-op(빈 문자열)로 생성 흐름을 막지 않음.
+    # 보관 실패는 "생성 실패" 사유가 되지 않음 → 빈 문자열로 두고 계속 진행.
+    score_url = ""
+    try:
+        from app.storage.s3 import is_configured, upload_bytes
+
+        if is_configured():
+            ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+            ctype = _SCORE_CONTENT_TYPE.get(ext, "application/octet-stream")
+            safe_name = (file.filename or "score").replace(" ", "_")
+            key = f"scores/{user.id}/{song.id}-{safe_name}"
+            # boto3 는 blocking I/O → 이벤트 루프 점유 방지용 threadpool 위임.
+            score_url = await run_in_threadpool(upload_bytes, key, data, ctype)
+    except Exception:
+        # 보관 실패 = 생성 실패 아님. 로그 없이 빈 문자열 유지(관리자 전용 저빈도 경로).
+        score_url = ""
+    if score_url:
+        song.score_url = score_url
+        db.commit()
+
     bg.add_task(_process_song, song.id)
     return GenerateResp(song_id=song.id, status=song.status)
 

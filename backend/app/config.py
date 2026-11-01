@@ -175,6 +175,12 @@ class Settings(BaseSettings):
     #   ⚠ **实现与测试全部保留、禁止删除**（MurekaProvider.vocal_clone / 文件头魔数校验 /
     #   限流器 / 用例）。重新上线只需置 True（.env: ENABLE_VOCAL_CLONE=true）。
     enable_vocal_clone: bool = False
+    # GAP-031 악보 OMR: 이미지/PDF 악보 → MusicXML 인식 스위치.
+    # oemer 는 별도 venv 에 설치되므로, 미설치/미설정 노드에서는 /from-score 가
+    # 이미지/PDF 를 501 로 거부한다(MusicXML 은 OMR 불필요). 설치 노드에서만 True 로 켠다.
+    enable_omr: bool = False
+    omr_runner_path: str = ""   # music_rebuild_project/tools/omr/omr_runner.py 절대경로
+    omr_python: str = ""        # oemer 가 설치된 python (예: music_rebuild_project venv)
     per_user_daily_quota: int = 3  # 免费用户每日生成配额（超限 402 引导订阅）
 
     # P1 — FLOW 钱包跨域「按次扣费」轨总开关（默认关；见 docs/PAID_USER_DOMAINS_PLAN_2026-09-12.md §4 P1）。
