@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import math
-import os
 import uuid
 from datetime import datetime, timezone
 
@@ -40,8 +39,11 @@ class _WalletBase(DeclarativeBase):
 # 暴露元数据供测试库建表（生产由 FLOW migration 建，音乐端不拥有该表）
 wallet_metadata = _WalletBase.metadata
 
-# ── 汇率（与 FLOW compliance.py:42 同一环境变量，P2 收敛单一来源前的临时副本）──
-FX_RATE_CNY_PER_KRW = float(os.environ.get("FX_RATE_CNY_PER_KRW", "0.19"))
+# ── 汇率：单一来源 ── 统一以 config.fx_rate_cny_to_krw (1 CNY = x KRW) 为准，
+# 此处反推 CNY/KRW，消除与 config 双源不一致。原 wallet_track 自带
+# FX_RATE_CNY_PER_KRW=0.19 与 config 的 ¥1≈₩190 相差约 36 倍，且 env var 名不同导致
+# .env 覆盖无法生效（现已通过 settings 统一接管，FX_RATE_CNY_TO_KRW 环境变量即可全局覆盖）。
+FX_RATE_CNY_PER_KRW = 1.0 / settings.fx_rate_cny_to_krw
 
 # 音乐域固定 workspace，便于跨域对账（FLOW 侧 workspace 概念在此统一为常数）。
 WALLET_WORKSPACE = "music"
